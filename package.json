@@ -1,0 +1,50 @@
+{
+  "name": "figma-sidebar-viewer",
+  "displayName": "Figma Sidebar Viewer",
+  "description": "A simple VS Code extension with a sidebar and a center webview for Figma.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:figmaSidebarView",
+    "onCommand:figma.openCenterView"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "figma.openCenterView",
+        "title": "Figma: Open Center View"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "figmaSidebarContainer",
+          "title": "Figma",
+          "icon": "media/figma.svg"
+        }
+      ]
+    },
+    "views": {
+      "figmaSidebarContainer": [
+        {
+          "id": "figmaSidebarView",
+          "name": "Figma"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "lint": "echo \"No lint configured\"",
+    "test": "echo \"No tests configured\""
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0"
+  }
+}

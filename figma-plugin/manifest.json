@@ -1,0 +1,10 @@
+{
+	"documentAccess": "dynamic-page",
+	"api": "1.0.0",
+	"networkAccess": { "allowedDomains": ["none"] },
+	"id": "com.Figma Plugin",
+	"name": "Figma Plugin",
+	"main": "src/main/main.js",
+	"ui": "src/ui/ui.jsx",
+	"editorType": ["figma", "figjam"]
+}
