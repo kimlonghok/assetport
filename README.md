@@ -1,3 +1,6 @@
+
+
+
 # Figma to VS Code Export
 
 This repository has two parts that work together:
@@ -71,3 +74,9 @@ npm run package    # build + package the VS Code extension as a .vsix file
 2. In Figma, select a layer and run the plugin.
 3. Choose an output folder (e.g. `assets/figma`) and export.
 4. The file is saved inside the first workspace folder open in VS Code.
+
+## Demo
+
+https://github.com/user-attachments/assets/3e10cea8-d1d3-4ab2-a74c-36342a0008f6
+
+
