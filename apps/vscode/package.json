@@ -1,0 +1,72 @@
+{
+  "name": "assetport",
+  "displayName": "AssetPort",
+  "description": "Export Figma assets directly to your VS Code workspace.",
+  "version": "0.1.0",
+  "publisher": "your-publisher-name",
+  "repository": "https://github.com/kimlonghok/figma-asset-exporter",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "figma",
+    "assets",
+    "export",
+    "design"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "icon": "icon.png",
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "assetport.startServer",
+        "title": "assetport: Start Export Server"
+      },
+      {
+        "command": "assetport.stopServer",
+        "title": "assetport: Stop Export Server"
+      }
+    ],
+    "configuration": {
+      "title": "assetport",
+      "properties": {
+        "assetport.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Gemini API key for AI-powered asset naming in the Figma plugin."
+        },
+        "assetport.compressionQuality": {
+          "type": "number",
+          "default": 75,
+          "minimum": 0,
+          "maximum": 100,
+          "markdownDescription": "Fallback quality target (0–100) for lossy compression of exported PNG/JPEG assets, similar to TinyPNG. Lower means smaller files. Set to `100` to keep PNGs lossless. SVGs are never compressed. The Figma plugin's own Compression quality setting overrides this when it sends an export."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "dev": "node esbuild.js --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "package": "pnpm run typecheck && node esbuild.js --production && npx vsce package --no-dependencies",
+    "package:all": "pnpm run typecheck && node scripts/package-targets.js"
+  },
+  "devDependencies": {
+    "@assetport/shared": "workspace:*",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@napi-rs/image": "^1.12.1"
+  }
+}

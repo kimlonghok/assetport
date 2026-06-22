@@ -1,0 +1,12 @@
+.git
+.gitignore
+*.vsix
+.napi-cache
+release
+scripts
+README.md
+node_modules
+src
+tsconfig.json
+esbuild.js
+**/*.map

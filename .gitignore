@@ -1,3 +1,6 @@
 node_modules/
-media/
 .DS_Store
+*.vsix
+dist/
+.napi-cache/
+release/

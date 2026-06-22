@@ -1,48 +1,12 @@
 {
-  "name": "figma-tool",
-  "displayName": "Figma Tool",
-  "description": "A simple VS Code extension to export Figma assets via a local server.",
-  "version": "0.0.1",
-  "repository": "https://github.com/example/figma-tool",
-  "publisher": "local",
-  "engines": {
-    "vscode": "^1.90.0"
-  },
-  "categories": [
-    "Other"
-  ],
-  "activationEvents": [
-    "onView:figmaSidebarView"
-  ],
-  "main": "./src/extension.js",
-  "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "figmaSidebarContainer",
-          "title": "Figma",
-          "icon": "media/figma.svg"
-        }
-      ]
-    },
-    "views": {
-      "figmaSidebarContainer": [
-        {
-          "id": "figmaSidebarView",
-          "name": "Figma",
-          "type": "webview"
-        }
-      ]
-    }
-  },
+  "name": "assetport-monorepo",
+  "private": true,
   "scripts": {
-    "build": "npm --prefix figma-plugin run build && echo \"Figma plugin built\"",
-    "lint": "echo \"No lint configured\"",
-    "package": "npm run build && npx vsce package",
-    "test": "echo \"No tests configured\""
+    "build": "pnpm --filter @assetport/figma-plugin run build && pnpm --filter assetport run build",
+    "dev:plugin": "pnpm --filter @assetport/figma-plugin run dev",
+    "dev:vscode": "pnpm --filter assetport run dev",
+    "package:vscode": "pnpm --filter assetport run package",
+    "package:vscode:all": "pnpm --filter assetport run package:all"
   },
-  "devDependencies": {
-    "@types/vscode": "^1.90.0",
-    "@vscode/vsce": "^3.2.1"
-  }
+  "packageManager": "pnpm@10.0.0+sha512.b8fef5494bd3fe4cbd4edabd0745df2ee5be3e4b0b8b08fa643aa3e4c6702ccc0f00d68fa8a8c9858a735a0032485a44990ed2810526c875e416f001b17df12b"
 }

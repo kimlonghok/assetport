@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+/* ─── Global resets & custom properties ─── */
+
+:root {
+	font-family: 'IBM Plex Sans', 'Avenir Next', sans-serif;
+	font-display: optional;
+	font-size: 16px;
+	color: var(--figma-color-text);
+	background:
+		radial-gradient(circle at top, color-mix(in srgb, var(--figma-color-bg-brand) 18%, transparent), transparent 32%),
+		linear-gradient(180deg, var(--figma-color-bg) 0%, var(--figma-color-bg-secondary) 100%);
+}
+
+html {
+	background: transparent;
+	color: var(--figma-color-text);
+	scrollbar-width: thin;
+	scrollbar-color: var(--figma-color-bg-tertiary) transparent;
+}
+
+body {
+	margin: 0;
+	font-size: 11px;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+input,
+select {
+	font-size: inherit;
+	font-family: inherit;
+	color: inherit;
+}
+
+button {
+	border: none;
+	appearance: none;
+	font-size: inherit;
+	color: inherit;
+	font-family: inherit;
+}
+
+#app {
+	min-height: 100vh;
+}
+
+/* ─── Complex grid layouts ─── */
+
+.draft-grid {
+	display: grid;
+	grid-template-columns: 144px minmax(0, 1fr) auto;
+	grid-template-rows: auto auto auto;
+	gap: 10px;
+	align-items: start;
+}
+
+.draft-grid__name {
+	min-width: 0;
+	grid-column: 2 / 4;
+}
+
+.draft-grid__action {
+	display: flex;
+	align-items: start;
+	grid-column: 3;
+	grid-row: 1;
+}
+
+.preview-panel {
+	grid-column: 1;
+	grid-row: 1 / 4;
+}
+
+.preview-panel--compact {
+	min-width: 0;
+}
+
+@media (max-width: 760px) {
+	.draft-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.preview-panel,
+	.draft-grid__name,
+	.draft-grid__action {
+		grid-column: 1;
+	}
+
+	.draft-grid__action {
+		align-self: end;
+	}
+}
+
+i18n-text {
+	display: contents;
+}
+
+@keyframes float-in {
+	from {
+		opacity: 0;
+		transform: translate(-50%, -8px);
+	}
+
+	to {
+		opacity: 1;
+		transform: translate(-50%, 0);
+	}
+}
