@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AssetFormat, AssetScale, ExportRequest, ExporterSettings, MainToUiMessage } from '@assetport/shared';
+import type { AssetFormat, AssetScale, CombinedMember, ExportRequest, ExporterSettings, IgnoredNode, MainToUiMessage } from '@assetport/shared';
 import {
   DEFAULT_DIR,
   SERVER_EXPORT_URL,
@@ -16,6 +16,10 @@ import {
 export interface QueuedAssetItem {
   id: string;
   nodeId: string;
+  /** Source layers merged into a single asset. Present only for "combined" assets (length >= 2). */
+  nodeIds?: string[];
+  /** Per-source metadata for editing a combined asset's members. */
+  members?: CombinedMember[];
   name: string;
   type: AssetFormat;
   scale: AssetScale;
@@ -25,6 +29,8 @@ export interface QueuedAssetItem {
   width?: number;
   height?: number;
   nameSuggestions?: string[];
+  /** Descendant layers hidden when this asset is exported. */
+  ignoredNodes?: IgnoredNode[];
 }
 
 interface PreviewAsset extends QueuedAssetItem {
@@ -58,6 +64,7 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
   const assetsRef = useRef<QueuedAssetItem[]>([]);
   const alertTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
+  const [ignoreEditorAssetId, setIgnoreEditorAssetId] = useState<string | null>(null);
   const [previewAsset, setPreviewAsset] = useState<PreviewAsset | null>(null);
   const [selectionState, setSelectionState] = useState({ selectedCount: 0, exportableCount: 0 });
   const [alert, setAlert] = useState<Alert | null>(null);
@@ -156,6 +163,8 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
           const noGemini = !geminiApiKey.trim() || exporterSettings.autoAIRename !== true;
           nextAssets.push({
             nodeId: captured.nodeId,
+            nodeIds: captured.nodeIds,
+            members: captured.members,
             name: uniqueName,
             type: defaultAssetType,
             scale: normalizeAssetScale(defaultAssetScale, defaultAssetType),
@@ -199,7 +208,9 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
           cur.map((a) => {
             if (a.nodeId !== nodeId) return a;
             const nextPreviews = { ...a.previews, [requestedScale]: previewUrl };
-            const nextPreviewUrl = nextPreviews[2] ?? nextPreviews[1] ?? previewUrl;
+            // Prefer the scale we just re-rendered so ignore-layer changes are reflected;
+            // assets are captured at 2x, so falling back to previews[2] would show a stale, ignore-less image.
+            const nextPreviewUrl = nextPreviews[requestedScale] ?? nextPreviews[2] ?? nextPreviews[1] ?? previewUrl;
             const nextStatus = !geminiApiKey.trim() || exporterSettings.autoAIRename !== true ? 'ready' as const : a.status;
             return { ...a, previews: nextPreviews, previewUrl: nextPreviewUrl, status: nextStatus };
           }),
@@ -220,6 +231,29 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
         const { assets: exportedAssets, failures = [] } = message;
         setExportProgress((p) => ({ ...p, detail: 'Uploading assets to VS Code...' }));
         await uploadAssetQueue(exportedAssets, failures);
+        return;
+      }
+
+      if (message.type === 'ignore-selection-captured') {
+        const { assetId, nodes, invalidCount } = message;
+        const asset = assetsRef.current.find((a) => a.id === assetId);
+        if (!asset) return;
+
+        const existing = asset.ignoredNodes ?? [];
+        const existingIds = new Set(existing.map((n) => n.nodeId));
+        const added = nodes.filter((n) => !existingIds.has(n.nodeId));
+
+        if (added.length) {
+          const nextIgnored = [...existing, ...added];
+          setAssets((cur) => cur.map((a) => (a.id === assetId ? { ...a, ignoredNodes: nextIgnored } : a)));
+          // Re-render the thumbnail with the ignored layers hidden so the user sees the result.
+          refreshPreviewAtScale({ ...asset, ignoredNodes: nextIgnored });
+          showAlert(`Added ${added.length} layer${added.length === 1 ? '' : 's'} to the ignore list.`, 'success');
+        } else if (invalidCount > 0) {
+          showAlert('Select a layer that lives inside this asset.', 'warning');
+        } else {
+          showAlert('Those layers are already in the ignore list.', 'info');
+        }
         return;
       }
 
@@ -313,6 +347,11 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     window.parent.postMessage({ pluginMessage: { type: 'capture-selection', scale: 2 } }, '*');
   };
 
+  const handleCombineAssets = () => {
+    setIsAdding(true);
+    window.parent.postMessage({ pluginMessage: { type: 'capture-combined-selection', scale: 2 } }, '*');
+  };
+
   const handleSaveAssetEdit = (updated: QueuedAssetItem) => {
     const existingNames = assetsRef.current.filter((a) => a.id !== updated.id).map((a) => a.name);
     const uniqueName = makeUniqueName(updated.name, existingNames);
@@ -329,6 +368,59 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
 
   const handleRemoveAsset = (assetId: string) => {
     setAssets((cur) => cur.filter((a) => a.id !== assetId));
+    setIgnoreEditorAssetId((cur) => (cur === assetId ? null : cur));
+  };
+
+  const handleOpenIgnoreEditor = (assetId: string) => setIgnoreEditorAssetId(assetId);
+  const handleCloseIgnoreEditor = () => setIgnoreEditorAssetId(null);
+
+  const handleAddIgnoreSelection = (assetId: string) => {
+    const asset = assetsRef.current.find((a) => a.id === assetId);
+    if (!asset) return;
+    window.parent.postMessage(
+      { pluginMessage: { type: 'capture-ignore-selection', assetId, parentNodeId: asset.nodeId, parentNodeIds: asset.nodeIds } },
+      '*',
+    );
+  };
+
+  /** Removes one source layer from a combined asset. Dropping to a single layer turns it back into a normal asset. */
+  const handleRemoveMergeMember = (assetId: string, nodeId: string) => {
+    const asset = assetsRef.current.find((a) => a.id === assetId);
+    if (!asset || !asset.nodeIds) return;
+
+    const nextIds = asset.nodeIds.filter((id) => id !== nodeId);
+    const nextMembers = (asset.members ?? []).filter((m) => m.nodeId !== nodeId);
+    // Keep ignored layers only if they still belong to a remaining member's subtree is hard to know here;
+    // dropping a member rarely invalidates them, and stale ids are simply skipped on export.
+    const nextIgnored = asset.ignoredNodes;
+
+    if (nextIds.length <= 1) {
+      const remainingId = nextIds[0] ?? asset.nodeId;
+      const single = {
+        ...asset,
+        nodeId: remainingId,
+        nodeIds: undefined,
+        members: undefined,
+        ignoredNodes: nextIgnored,
+        status: 'processing' as const,
+      };
+      setAssets((cur) => cur.map((a) => (a.id === assetId ? single : a)));
+      setIgnoreEditorAssetId((cur) => (cur === assetId ? null : cur));
+      refreshPreviewAtScale(single);
+      return;
+    }
+
+    const updated = { ...asset, nodeIds: nextIds, members: nextMembers, ignoredNodes: nextIgnored, status: 'processing' as const };
+    setAssets((cur) => cur.map((a) => (a.id === assetId ? updated : a)));
+    refreshPreviewAtScale(updated);
+  };
+
+  const handleRemoveIgnoreNode = (assetId: string, nodeId: string) => {
+    const asset = assetsRef.current.find((a) => a.id === assetId);
+    if (!asset) return;
+    const nextIgnored = (asset.ignoredNodes ?? []).filter((n) => n.nodeId !== nodeId);
+    setAssets((cur) => cur.map((a) => (a.id === assetId ? { ...a, ignoredNodes: nextIgnored } : a)));
+    refreshPreviewAtScale({ ...asset, ignoredNodes: nextIgnored });
   };
 
   const handleRetryPreview = (assetId: string) => {
@@ -367,7 +459,14 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
           type: 'export-queue',
           relativeDir: effectiveDir,
           compressionQuality: exporterSettings.compressionQuality,
-          assets: assetsRef.current.map((a) => ({ nodeId: a.nodeId, name: a.name, type: a.type, scale: a.scale })),
+          assets: assetsRef.current.map((a) => ({
+            nodeId: a.nodeId,
+            nodeIds: a.nodeIds,
+            name: a.name,
+            type: a.type,
+            scale: a.scale,
+            ignoredNodeIds: (a.ignoredNodes ?? []).map((n) => n.nodeId),
+          })),
         },
       },
       '*',
@@ -444,6 +543,7 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     dismissAlert,
     editingAssetId,
     exportProgress,
+    ignoreEditorAssetId,
     isAdding,
     isExporting,
     previewAsset,
@@ -456,11 +556,17 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     setPreviewAsset,
     handleAIRename,
     handleAddAsset,
+    handleCombineAssets,
+    handleAddIgnoreSelection,
     handleCancelAssetEdit,
     handleClearQueue,
+    handleCloseIgnoreEditor,
     handleExportQueue,
+    handleOpenIgnoreEditor,
     handlePreviewAsset,
     handleRemoveAsset,
+    handleRemoveIgnoreNode,
+    handleRemoveMergeMember,
     handleRetryPreview,
     handleSaveAssetEdit,
   };

@@ -8,6 +8,7 @@ interface Props {
   onRemove: (assetId: string) => void;
   onAIRename: (assetId: string, lastAttemptedName: string) => void;
   onRetryPreview: (assetId: string) => void;
+  onOpenIgnore: (assetId: string) => void;
   aiRenameEnabled: boolean;
   onPreview?: () => void;
 }
@@ -21,11 +22,14 @@ const iconButtonClasses =
 const aiButtonClasses =
   'h-7 shrink-0 px-2 rounded-full transition-colors inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--figma-color-bg-brand)] hover:bg-[color-mix(in_srgb,var(--figma-color-bg-brand)_14%,transparent)]';
 
-export function AssetRow({ asset, onUpdate, onRemove, onAIRename, onRetryPreview, aiRenameEnabled, onPreview }: Props) {
+export function AssetRow({ asset, onUpdate, onRemove, onAIRename, onRetryPreview, onOpenIgnore, aiRenameEnabled, onPreview }: Props) {
   const isRenaming = asset.status === 'renaming';
   const isProcessing = asset.status === 'processing';
   const isPreviewFailed = asset.status === 'preview-failed';
   const availableScales: AssetScale[] = asset.type === 'svg' ? [1] : [1, 2, 3, 4];
+  const ignoreCount = asset.ignoredNodes?.length ?? 0;
+  const combinedCount = asset.nodeIds?.length ?? 0;
+  const isCombined = combinedCount > 1;
 
   const [nameDraft, setNameDraft] = useState(asset.name);
   const isFocusedRef = useRef(false);
@@ -62,7 +66,7 @@ export function AssetRow({ asset, onUpdate, onRemove, onAIRename, onRetryPreview
         title="View full size"
       >
         {asset.previewUrl ? (
-          <img src={asset.previewUrl} alt="" className="w-full h-full object-cover pointer-events-none" />
+          <img src={asset.previewUrl} alt="" className="w-full h-full object-contain pointer-events-none" />
         ) : (
           <svg className="w-4 h-4 text-[var(--figma-color-text-tertiary)]" viewBox="0 0 16 16" fill="none">
             <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" />
@@ -127,6 +131,39 @@ export function AssetRow({ asset, onUpdate, onRemove, onAIRename, onRetryPreview
               AI
             </button>
           ) : null}
+
+          {isCombined ? (
+            <button
+              className={`${iconButtonClasses} relative text-[var(--figma-color-bg-brand)]`}
+              onClick={() => onOpenIgnore(asset.id)}
+              title={`Merged from ${combinedCount} layers — click to manage`}
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="2" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                <rect x="6" y="6" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
+              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-[3px] rounded-full bg-[var(--figma-color-bg-brand)] text-[var(--figma-color-text-onbrand)] text-[9px] font-bold leading-[14px] text-center">
+                {combinedCount}
+              </span>
+            </button>
+          ) : (
+            <button
+              className={`${iconButtonClasses} relative ${ignoreCount > 0 ? 'text-[var(--figma-color-bg-brand)]' : ''}`}
+              onClick={() => onOpenIgnore(asset.id)}
+              title={ignoreCount > 0 ? `${ignoreCount} ignored layer${ignoreCount === 1 ? '' : 's'}` : 'Ignore layers on export'}
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none">
+                <path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                <circle cx="8" cy="8" r="1.6" stroke="currentColor" strokeWidth="1.3"/>
+                <path d="M2.5 2.5l11 11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              </svg>
+              {ignoreCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-[3px] rounded-full bg-[var(--figma-color-bg-brand)] text-[var(--figma-color-text-onbrand)] text-[9px] font-bold leading-[14px] text-center">
+                  {ignoreCount}
+                </span>
+              )}
+            </button>
+          )}
 
           <button
             className="h-7 w-7 shrink-0 rounded-full cursor-pointer transition-colors inline-flex items-center justify-center text-[#c2410c] hover:bg-[rgba(194,65,12,0.1)]"

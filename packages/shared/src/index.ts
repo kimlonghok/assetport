@@ -45,11 +45,31 @@ export interface ExporterSettings {
 
 // postMessage protocol — Figma plugin UI ↔ main thread
 
+/** One source layer that makes up a "combined" asset. */
+export interface CombinedMember {
+  nodeId: string;
+  name: string;
+  /** Small 1x PNG data-URL preview of the source layer. */
+  previewUrl: string;
+}
+
 export interface SelectionStub {
   nodeId: string;
   name: string;
   width: number;
   height: number;
+  previewUrl?: string;
+  /** Source layers merged into a single asset. Present only for "combined" assets (length >= 2). */
+  nodeIds?: string[];
+  /** Per-source metadata for editing a combined asset's members. */
+  members?: CombinedMember[];
+}
+
+/** A descendant layer that should be hidden when its parent asset is exported. */
+export interface IgnoredNode {
+  nodeId: string;
+  name: string;
+  /** Small 1x PNG data-URL preview of the ignored layer. */
   previewUrl?: string;
 }
 
@@ -58,11 +78,17 @@ export interface QueuedAsset {
   name: string;
   type: AssetFormat;
   scale: AssetScale;
+  /** Descendant node ids to hide before exporting this asset. */
+  ignoredNodeIds?: string[];
+  /** Source layers merged into a single asset. Present only for "combined" assets (length >= 2). */
+  nodeIds?: string[];
 }
 
 export type UiToMainMessage =
   | { type: 'capture-selection'; scale?: number }
-  | { type: 'refresh-selection-context'; nodeId: string; scale: number; assetType?: string }
+  | { type: 'capture-combined-selection'; scale?: number }
+  | { type: 'refresh-selection-context'; nodeId: string; scale: number; assetType?: string; ignoredNodeIds?: string[]; nodeIds?: string[] }
+  | { type: 'capture-ignore-selection'; assetId: string; parentNodeId: string; parentNodeIds?: string[] }
   | { type: 'request-selection-state' }
   | { type: 'export-queue'; assets: QueuedAsset[]; relativeDir: string; compressionQuality?: number }
   | { type: 'load-gemini-key' }
@@ -73,6 +99,7 @@ export type UiToMainMessage =
 export type MainToUiMessage =
   | { type: 'selection-captured'; assets: SelectionStub[]; selectedCount: number }
   | { type: 'selection-context-refreshed'; nodeId: string; name: string; previewUrl: string; requestedScale: number; width: number; height: number }
+  | { type: 'ignore-selection-captured'; assetId: string; nodes: IgnoredNode[]; invalidCount: number }
   | { type: 'selection-state-updated'; selectedCount: number; exportableCount: number }
   | { type: 'asset-queue-ready'; assets: ExportRequest[]; failures?: { name: string; error: string }[] }
   | { type: 'gemini-key-loaded'; apiKey: string }

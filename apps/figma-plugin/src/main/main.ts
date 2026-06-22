@@ -2,6 +2,7 @@ import type {
   ExportRequest,
   ExporterSettings,
   MainToUiMessage,
+  SelectionStub,
   UiToMainMessage,
 } from '@assetport/shared';
 
@@ -18,9 +19,29 @@ export default function (): void {
         return;
       }
 
+      if (message.type === 'capture-combined-selection') {
+        const asset = await getCombinedSelectionAsset(message.scale ?? 2);
+        send({ type: 'selection-captured', assets: [asset], selectedCount: figma.currentPage.selection.length });
+        return;
+      }
+
       if (message.type === 'refresh-selection-context') {
-        const preview = await getSelectionContextByNodeId(message.nodeId, message.scale);
+        if (Array.isArray(message.nodeIds) && message.nodeIds.length > 1) {
+          const preview = await getCombinedSelectionContext(message.nodeId, message.nodeIds, message.scale, message.ignoredNodeIds);
+          send({ type: 'selection-context-refreshed', ...preview, requestedScale: message.scale });
+          return;
+        }
+        const preview = await getSelectionContextByNodeId(message.nodeId, message.scale, message.ignoredNodeIds);
         send({ type: 'selection-context-refreshed', ...preview, requestedScale: message.scale });
+        return;
+      }
+
+      if (message.type === 'capture-ignore-selection') {
+        const parentNodeIds = Array.isArray(message.parentNodeIds) && message.parentNodeIds.length
+          ? message.parentNodeIds
+          : [message.parentNodeId];
+        const result = await captureIgnoreSelection(parentNodeIds);
+        send({ type: 'ignore-selection-captured', assetId: message.assetId, ...result });
         return;
       }
 
@@ -101,9 +122,207 @@ async function getCurrentSelectionAssets(): Promise<{ assets: (ReturnType<typeof
   return { assets, selectedCount: figma.currentPage.selection.length };
 }
 
-async function getSelectionContextByNodeId(nodeId: string, scale = 2) {
+type ExportableSceneNode = SceneNode & { exportAsync: ExportableNode['exportAsync'] };
+
+/** Builds a single "combined" asset stub from the current selection, merging all exportable layers. */
+async function getCombinedSelectionAsset(scale: number): Promise<SelectionStub & { previewUrl: string }> {
+  const nodes = getSelectedExportableNodes();
+  if (nodes.length < 2) throw new Error('Select at least two layers to combine into one asset.');
+
+  const nodeIds = nodes.map((n) => n.id);
+  const { bytes, width, height } = await exportCombinedNodes(nodes, 'PNG', scale);
+  const members = await Promise.all(
+    nodes.map(async (node) => {
+      let previewUrl = '';
+      try {
+        previewUrl = (await exportNodePreview(node, 1)).previewUrl;
+      } catch {
+        // Thumbnail is best-effort — the UI falls back to a placeholder icon.
+      }
+      return { nodeId: node.id, name: node.name || 'layer', previewUrl };
+    }),
+  );
+
+  return {
+    nodeId: `combined:${nodeIds.join('+')}`,
+    nodeIds,
+    members,
+    name: nodes[0].name || 'combinedAsset',
+    width: getRoundedDimension(width, 1),
+    height: getRoundedDimension(height, 1),
+    previewUrl: `data:image/png;base64,${bytesToBase64(bytes)}`,
+  };
+}
+
+async function getCombinedSelectionContext(nodeId: string, nodeIds: string[], scale = 2, ignoredNodeIds?: string[]) {
+  const nodes = await Promise.all(nodeIds.map(getExportableNode));
+  const { bytes, width, height } = await exportCombinedNodes(nodes, 'PNG', scale, ignoredNodeIds);
+  return {
+    nodeId,
+    name: '',
+    previewUrl: `data:image/png;base64,${bytesToBase64(bytes)}`,
+    width: getRoundedDimension(width, scale),
+    height: getRoundedDimension(height, scale),
+  };
+}
+
+/**
+ * Renders several layers as a single image by cloning them into a temporary frame
+ * sized to their combined bounds, then exporting the frame. The originals are never
+ * touched and the frame is removed afterwards.
+ */
+async function exportCombinedNodes(
+  nodes: ExportableSceneNode[],
+  format: 'PNG' | 'SVG' | 'JPEG',
+  scale: number | string,
+  ignoredNodeIds?: string[],
+): Promise<{ bytes: Uint8Array; width: number; height: number }> {
+  // Hide ignored descendants on the originals first; the clones below inherit
+  // that hidden state, so they're excluded from the merged image.
+  const restore = await hideNodes(ignoredNodeIds);
+  try {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const node of nodes) {
+      const bounds = node.absoluteRenderBounds ?? node.absoluteBoundingBox;
+      if (!bounds) continue;
+      minX = Math.min(minX, bounds.x);
+      minY = Math.min(minY, bounds.y);
+      maxX = Math.max(maxX, bounds.x + bounds.width);
+      maxY = Math.max(maxY, bounds.y + bounds.height);
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+      throw new Error('Unable to determine the bounds of the selected layers.');
+    }
+
+    const width = Math.max(1, maxX - minX);
+    const height = Math.max(1, maxY - minY);
+
+    const frame = figma.createFrame();
+    frame.name = 'assetport-combine-temp';
+    frame.fills = [];
+    frame.clipsContent = false;
+    frame.resize(width, height);
+
+    try {
+      for (const node of nodes) {
+        const clone = node.clone();
+        frame.appendChild(clone);
+        // Re-anchor the clone so the combined bounds' top-left maps to the frame origin,
+        // preserving each layer's relative position, rotation and scale.
+        const m = node.absoluteTransform;
+        clone.relativeTransform = [
+          [m[0][0], m[0][1], m[0][2] - minX],
+          [m[1][0], m[1][1], m[1][2] - minY],
+        ];
+      }
+
+      const bytes = await frame.exportAsync({ format, constraint: { type: 'SCALE', value: normalizeScale(scale) } });
+      return { bytes, width, height };
+    } finally {
+      frame.remove();
+    }
+  } finally {
+    restore();
+  }
+}
+
+async function getSelectionContextByNodeId(nodeId: string, scale = 2, ignoredNodeIds?: string[]) {
   const node = await getExportableNode(nodeId);
-  return buildSelectionContext(node, scale);
+  const restore = await hideNodes(ignoredNodeIds);
+  try {
+    return await buildSelectionContext(node, scale);
+  } finally {
+    restore();
+  }
+}
+
+async function captureIgnoreSelection(
+  parentNodeIds: string[],
+): Promise<{ nodes: { nodeId: string; name: string; previewUrl: string }[]; invalidCount: number }> {
+  const selected = figma.currentPage.selection;
+  if (!selected.length) {
+    throw new Error('Select a layer inside the asset to add it to the ignore list.');
+  }
+
+  const parents = await Promise.all(parentNodeIds.map((id) => figma.getNodeByIdAsync(id)));
+  const validParentIds = parentNodeIds.filter((_, i) => parents[i] != null);
+  if (!validParentIds.length) throw new Error('The asset layer is no longer available.');
+
+  const nodes: { nodeId: string; name: string; previewUrl: string }[] = [];
+  let invalidCount = 0;
+
+  for (const node of selected) {
+    const isParent = validParentIds.includes(node.id);
+    const isDescendant = validParentIds.some((parentId) => isDescendantOf(node, parentId));
+    if (isParent || !isDescendant) {
+      invalidCount++;
+      continue;
+    }
+
+    let previewUrl = '';
+    if (typeof (node as ExportableNode).exportAsync === 'function') {
+      try {
+        const preview = await exportNodePreview(node as SceneNode & { exportAsync: ExportableNode['exportAsync'] }, 1);
+        previewUrl = preview.previewUrl;
+      } catch {
+        // Thumbnail is best-effort — fall back to the placeholder icon in the UI.
+      }
+    }
+
+    nodes.push({ nodeId: node.id, name: node.name || 'layer', previewUrl });
+  }
+
+  return { nodes, invalidCount };
+}
+
+function isDescendantOf(node: BaseNode, ancestorId: string): boolean {
+  let current: BaseNode | null = node.parent;
+  while (current) {
+    if (current.id === ancestorId) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+/**
+ * Temporarily hides the given nodes and returns a function that restores their
+ * original visibility. Nodes that are already hidden or missing are left untouched.
+ */
+async function hideNodes(nodeIds?: string[]): Promise<() => void> {
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) return () => {};
+
+  const restores: (() => void)[] = [];
+  for (const id of nodeIds) {
+    try {
+      const node = await figma.getNodeByIdAsync(id);
+      if (node && 'visible' in node) {
+        const sceneNode = node as SceneNode;
+        if (sceneNode.visible) {
+          sceneNode.visible = false;
+          restores.push(() => {
+            sceneNode.visible = true;
+          });
+        }
+      }
+    } catch {
+      // Node no longer exists — nothing to hide or restore.
+    }
+  }
+
+  return () => {
+    for (const restore of restores) {
+      try {
+        restore();
+      } catch {
+        // Best-effort restore.
+      }
+    }
+  };
 }
 
 function buildSelectionStub(node: SceneNode & { exportAsync: unknown }) {
@@ -121,7 +340,7 @@ async function buildSelectionContext(node: SceneNode & { exportAsync: Exportable
 }
 
 async function exportQueuedAssets(
-  assets: { nodeId: string; name: string; type: string; scale: number }[],
+  assets: { nodeId: string; name: string; type: string; scale: number; ignoredNodeIds?: string[]; nodeIds?: string[] }[],
   relativeDir: string,
   compressionQuality?: number,
 ): Promise<{ assets: ExportRequest[]; failures: { name: string; error: string }[] }> {
@@ -135,15 +354,30 @@ async function exportQueuedAssets(
 
   for (const asset of assets) {
     try {
-      const node = await getExportableNode(asset.nodeId);
       const format = normalizeFormat(asset.type);
-      const bytes = await node.exportAsync({
-        format,
-        constraint: { type: 'SCALE', value: normalizeScale(asset.scale) },
-      });
+      let bytes: Uint8Array;
+      let fallbackName: string;
+
+      if (Array.isArray(asset.nodeIds) && asset.nodeIds.length > 1) {
+        const nodes = await Promise.all(asset.nodeIds.map(getExportableNode));
+        ({ bytes } = await exportCombinedNodes(nodes, format, asset.scale, asset.ignoredNodeIds));
+        fallbackName = 'combined-asset';
+      } else {
+        const node = await getExportableNode(asset.nodeId);
+        const restore = await hideNodes(asset.ignoredNodeIds);
+        try {
+          bytes = await node.exportAsync({
+            format,
+            constraint: { type: 'SCALE', value: normalizeScale(asset.scale) },
+          });
+        } finally {
+          restore();
+        }
+        fallbackName = node.name || 'figma-asset';
+      }
 
       exportedAssets.push({
-        fileName: sanitizeFileName(asset.name || node.name || 'figma-asset'),
+        fileName: sanitizeFileName(asset.name || fallbackName),
         extension: asset.type as ExportRequest['extension'],
         relativeDir: buildRelativeDir(relativeDir),
         base64Data: bytesToBase64(bytes),
@@ -262,7 +496,7 @@ function normalizeExporterScale(value: number, assetType: string): ExporterSetti
 }
 
 function mapErrorType(actionType: string): MainToUiMessage['type'] {
-  if (actionType === 'capture-selection') return 'selection-error';
+  if (actionType === 'capture-selection' || actionType === 'capture-ignore-selection') return 'selection-error';
   if (actionType === 'refresh-selection-context') return 'preview-error';
   if (actionType === 'load-exporter-settings' || actionType === 'save-exporter-settings') return 'settings-error';
   if (actionType === 'load-gemini-key' || actionType === 'save-gemini-key') return 'settings-error';

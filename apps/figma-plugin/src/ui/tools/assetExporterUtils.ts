@@ -149,9 +149,25 @@ export function getCachedPreviewForScale(asset: AssetWithPreviews): string {
   return previews[scale] ?? previews[2] ?? previews[1] ?? asset.previewUrl ?? '';
 }
 
-export function refreshPreviewAtScale(asset: { nodeId: string; scale: AssetScale; type: AssetFormat }): void {
+export function refreshPreviewAtScale(asset: {
+  nodeId: string;
+  scale: AssetScale;
+  type: AssetFormat;
+  ignoredNodes?: { nodeId: string }[];
+  nodeIds?: string[];
+}): void {
+  const ignoredNodeIds = asset.ignoredNodes?.map((n) => n.nodeId);
   window.parent.postMessage(
-    { pluginMessage: { type: 'refresh-selection-context', nodeId: asset.nodeId, scale: asset.scale, assetType: asset.type } },
+    {
+      pluginMessage: {
+        type: 'refresh-selection-context',
+        nodeId: asset.nodeId,
+        scale: asset.scale,
+        assetType: asset.type,
+        ignoredNodeIds,
+        nodeIds: asset.nodeIds,
+      },
+    },
     '*',
   );
 }

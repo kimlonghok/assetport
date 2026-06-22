@@ -35,7 +35,6 @@ The extension is the server. The Figma plugin is the client.
 - **SVG as React component** — Export SVG layers as `.jsx` / `.tsx` files with the SVG inlined as a React component.
 - **SVG as Vue component** — Same as above but wrapped in a `.vue` single-file component.
 - **Workspace collision detection** — Before writing a file, check whether a file with the same name and path already exists in the workspace and prompt the user to overwrite, rename, or skip.
-- **Per-node ignore list** — Mark specific child layers or nodes to be excluded from an export (e.g. strip annotation layers or placeholder content).
 
 ---
 

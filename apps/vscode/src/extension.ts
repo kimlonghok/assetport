@@ -57,10 +57,10 @@ class AssetPortStatusBar implements vscode.Disposable {
 
   private render(): void {
     if (this.server.isRunning()) {
-      this.item.text = '$(circle-slash) AssetPort';
+      this.item.text = '$(circle-slash) assetport';
       this.item.tooltip = 'assetport is running';
     } else {
-      this.item.text = '$(zap) AssetPort';
+      this.item.text = '$(zap) assetport';
       this.item.tooltip = 'assetport is not running';
     }
     this.item.backgroundColor = undefined;
