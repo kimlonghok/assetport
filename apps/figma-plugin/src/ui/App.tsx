@@ -48,6 +48,12 @@ function App() {
         return;
       }
 
+      if (message.type === 'gemini-key-saved') {
+        setGeminiSaveStatus('saved');
+        window.setTimeout(() => setGeminiSaveStatus('idle'), 2000);
+        return;
+      }
+
       if (message.type === 'exporter-settings-loaded' || message.type === 'exporter-settings-saved') {
         const s = message.settings ?? ({} as ExporterSettings);
         const defaultType = normalizeAssetType(s.defaultType);
@@ -76,8 +82,6 @@ function App() {
     geminiApiKeyRef.current = trimmedKey;
     setGeminiSaveStatus('saving');
     window.parent.postMessage({ pluginMessage: { type: 'save-gemini-key', apiKey: trimmedKey } }, '*');
-    setGeminiSaveStatus('saved');
-    setTimeout(() => setGeminiSaveStatus('idle'), 2000);
   };
 
   const handleSaveExporterSettings = (settings: ExporterSettings) => {

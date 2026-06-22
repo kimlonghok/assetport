@@ -1,6 +1,7 @@
 {
   "name": "assetport-monorepo",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "build": "pnpm --filter @assetport/figma-plugin run build && pnpm --filter assetport run build",
     "dev:plugin": "pnpm --filter @assetport/figma-plugin run dev",

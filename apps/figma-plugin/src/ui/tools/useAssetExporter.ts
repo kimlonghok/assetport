@@ -19,14 +19,12 @@ export interface QueuedAssetItem {
   name: string;
   type: AssetFormat;
   scale: AssetScale;
-  status: 'processing' | 'renaming' | 'ready' | 'failed';
-  previewUrl?: string;
-  previewUrl1x?: string;
-  previewUrl2x?: string;
+  status: 'processing' | 'renaming' | 'ready' | 'preview-failed' | 'rename-failed';
+  previews: Record<number, string>;
+  previewUrl: string;
   width?: number;
   height?: number;
   nameSuggestions?: string[];
-  [key: string]: unknown;
 }
 
 interface PreviewAsset extends QueuedAssetItem {
@@ -153,17 +151,20 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
           }
           const baseName = sanitizeDraftName(captured.name);
           const uniqueName = makeUniqueName(baseName, existingNames.concat(nextAssets.map((a) => a.name)));
+          const previewUrl = captured.previewUrl ?? '';
+          const hasPreview = Boolean(previewUrl);
+          const noGemini = !geminiApiKey.trim() || exporterSettings.autoAIRename !== true;
           nextAssets.push({
             nodeId: captured.nodeId,
             name: uniqueName,
             type: defaultAssetType,
             scale: normalizeAssetScale(defaultAssetScale, defaultAssetType),
-            previewUrl: '',
-            previewUrl2x: '',
+            previews: hasPreview ? { 2: previewUrl } : {},
+            previewUrl,
             width: captured.width,
             height: captured.height,
             id: `${captured.nodeId}-${Date.now()}-${index}`,
-            status: 'processing',
+            status: hasPreview && noGemini ? 'ready' : 'processing',
           });
           existingNodeIds.add(captured.nodeId);
         });
@@ -175,7 +176,15 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
 
         setAssets((cur) => [...nextAssets, ...cur]);
         if (duplicateCount > 0) showAlert('Asset already existed', 'error');
-        nextAssets.forEach((a) => refreshPreviewAtScale(a));
+
+        nextAssets.forEach((a) => {
+          if (!a.previewUrl) {
+            // Preview export failed — retry via the normal refresh path.
+            refreshPreviewAtScale(a);
+          } else if (geminiApiKey.trim() && exporterSettings.autoAIRename === true) {
+            queueGeminiRename(a.id, { apiKey: geminiApiKey.trim(), model: exporterSettings.aiModel, nodeName: a.name, assetType: a.type, previewUrl: a.previewUrl });
+          }
+        });
         return;
       }
 
@@ -184,20 +193,15 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
         const asset = assetsRef.current.find((a) => a.nodeId === nodeId);
         if (!asset) return;
 
-        const hasExisting = Boolean(
-          asset.previewUrl || asset.previewUrl1x || asset.previewUrl2x || asset[`previewUrl${requestedScale}x`],
-        );
+        const hasExisting = Object.keys(asset.previews).length > 0;
 
         setAssets((cur) =>
           cur.map((a) => {
             if (a.nodeId !== nodeId) return a;
-            const updated = { ...a };
-            if (requestedScale === 1) updated.previewUrl1x = previewUrl;
-            else if (requestedScale === 2) updated.previewUrl2x = previewUrl;
-            else updated[`previewUrl${requestedScale}x`] = previewUrl;
-            updated.previewUrl = updated.previewUrl2x ?? updated.previewUrl1x ?? updated.previewUrl ?? previewUrl;
-            if (!geminiApiKey.trim() || exporterSettings.autoAIRename !== true) updated.status = 'ready';
-            return updated;
+            const nextPreviews = { ...a.previews, [requestedScale]: previewUrl };
+            const nextPreviewUrl = nextPreviews[2] ?? nextPreviews[1] ?? previewUrl;
+            const nextStatus = !geminiApiKey.trim() || exporterSettings.autoAIRename !== true ? 'ready' as const : a.status;
+            return { ...a, previews: nextPreviews, previewUrl: nextPreviewUrl, status: nextStatus };
           }),
         );
 
@@ -213,13 +217,14 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
       }
 
       if (message.type === 'asset-queue-ready') {
+        const { assets: exportedAssets, failures = [] } = message;
         setExportProgress((p) => ({ ...p, detail: 'Uploading assets to VS Code...' }));
-        await uploadAssetQueue(message.assets);
+        await uploadAssetQueue(exportedAssets, failures);
         return;
       }
 
       if (message.type === 'preview-error') {
-        setAssets((cur) => cur.map((a) => (a.nodeId === message.nodeId ? { ...a, status: 'failed' } : a)));
+        setAssets((cur) => cur.map((a) => (a.nodeId === message.nodeId ? { ...a, status: 'preview-failed' } : a)));
         showAlert(message.error, 'error', 6000);
         return;
       }
@@ -249,24 +254,33 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
         }),
       )
       .then(({ suggestions }) => {
-        const baseName = suggestions[0] || params.nodeName;
-        const newName = makeUniqueName(baseName, assetsRef.current.filter((a) => a.id !== assetId).map((a) => a.name));
-        setAssets((cur) => cur.map((a) => (a.id === assetId ? { ...a, name: newName, status: 'ready', nameSuggestions: suggestions } : a)));
+        setAssets((cur) => {
+          const target = cur.find((a) => a.id === assetId);
+          if (!target) return cur;
+          const baseName = suggestions[0] || params.nodeName;
+          const newName = makeUniqueName(baseName, cur.filter((a) => a.id !== assetId).map((a) => a.name));
+          return cur.map((a) => (a.id === assetId ? { ...a, name: newName, status: 'ready', nameSuggestions: suggestions } : a));
+        });
       })
       .catch(() => {
-        setAssets((cur) => cur.map((a) => (a.id === assetId ? { ...a, status: 'failed' } : a)));
+        setAssets((cur) => {
+          if (!cur.some((a) => a.id === assetId)) return cur;
+          return cur.map((a) => (a.id === assetId ? { ...a, status: 'rename-failed' } : a));
+        });
       });
   };
 
   const handleAIRename = (assetId: string, lastAttemptedName: string | null = null) => {
     const asset = assetsRef.current.find((a) => a.id === assetId);
-    if (!asset?.previewUrl2x && !asset?.previewUrl) return;
+    if (!asset) return;
+    const bestPreview = asset.previews[2] ?? asset.previews[1] ?? asset.previewUrl;
+    if (!bestPreview) return;
     const effectiveKey = geminiApiKey.trim();
     if (!effectiveKey) return;
 
     setAssets((cur) => cur.map((a) => (a.id === assetId ? { ...a, status: 'renaming' } : a)));
 
-    preparePreviewForGemini((asset.previewUrl2x ?? asset.previewUrl) as string)
+    preparePreviewForGemini(bestPreview)
       .then((nodePreview) =>
         requestGeminiNameSuggestionsWithRetry({
           apiKey: effectiveKey,
@@ -279,11 +293,18 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
         }),
       )
       .then(({ suggestions }) => {
-        const newName = makeUniqueName(suggestions[0] || asset.name, assetsRef.current.filter((a) => a.id !== assetId).map((a) => a.name));
-        setAssets((cur) => cur.map((a) => (a.id === assetId ? { ...a, name: newName, status: 'ready', nameSuggestions: suggestions } : a)));
+        setAssets((cur) => {
+          const target = cur.find((a) => a.id === assetId);
+          if (!target) return cur;
+          const newName = makeUniqueName(suggestions[0] || asset.name, cur.filter((a) => a.id !== assetId).map((a) => a.name));
+          return cur.map((a) => (a.id === assetId ? { ...a, name: newName, status: 'ready', nameSuggestions: suggestions } : a));
+        });
       })
       .catch(() => {
-        setAssets((cur) => cur.map((a) => (a.id === assetId ? { ...a, status: 'failed' } : a)));
+        setAssets((cur) => {
+          if (!cur.some((a) => a.id === assetId)) return cur;
+          return cur.map((a) => (a.id === assetId ? { ...a, status: 'rename-failed' } : a));
+        });
       });
   };
 
@@ -302,7 +323,7 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
   const handleCancelAssetEdit = () => setEditingAssetId(null);
 
   const handlePreviewAsset = (asset: QueuedAssetItem) => {
-    setPreviewAsset({ ...asset, currentPreviewUrl: getCachedPreviewForScale(asset) as string, zoom: 1 });
+    setPreviewAsset({ ...asset, currentPreviewUrl: getCachedPreviewForScale(asset), zoom: 1 });
     refreshPreviewAtScale(asset);
   };
 
@@ -310,15 +331,31 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     setAssets((cur) => cur.filter((a) => a.id !== assetId));
   };
 
+  const handleRetryPreview = (assetId: string) => {
+    const asset = assetsRef.current.find((a) => a.id === assetId);
+    if (!asset) return;
+    setAssets((cur) => cur.map((a) => (a.id === assetId ? { ...a, status: 'processing' } : a)));
+    refreshPreviewAtScale(asset);
+  };
+
   const handleClearQueue = () => {
     setAssets([]);
     setConfirmAction(null);
   };
 
-  const handleExportQueue = () => {
+  const handleExportQueue = (dir: string) => {
     if (!assetsRef.current.length) {
       showAlert('Add at least one asset before exporting.', 'warning');
       return;
+    }
+
+    const effectiveDir = dir.trim() || DEFAULT_DIR;
+    if (effectiveDir !== relativeDir) {
+      setRelativeDir(effectiveDir);
+      window.parent.postMessage(
+        { pluginMessage: { type: 'save-exporter-settings', settings: { ...exporterSettings, relativeDir: effectiveDir } } },
+        '*',
+      );
     }
 
     const total = assetsRef.current.length;
@@ -328,7 +365,7 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
       {
         pluginMessage: {
           type: 'export-queue',
-          relativeDir,
+          relativeDir: effectiveDir,
           compressionQuality: exporterSettings.compressionQuality,
           assets: assetsRef.current.map((a) => ({ nodeId: a.nodeId, name: a.name, type: a.type, scale: a.scale })),
         },
@@ -337,28 +374,52 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     );
   };
 
-  const uploadAssetQueue = async (queuedAssets: ExportRequest[]) => {
+  const uploadAssetQueue = async (queuedAssets: ExportRequest[], figmaFailures: { name: string; error: string }[] = []) => {
     try {
       const savedPaths: string[] = [];
       const total = queuedAssets.length;
 
       for (const [index, asset] of queuedAssets.entries()) {
-        setExportProgress({ current: index, detail: `Saving ${asset.fileName}.${asset.extension} to VS Code...`, total, visible: true });
+        setExportProgress({ current: index, detail: `Uploading ${asset.fileName}.${asset.extension}...`, total, visible: true });
 
-        const response = await fetch(SERVER_EXPORT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(asset),
-        });
-        const result = await response.json() as { ok?: boolean; relativePath?: string; error?: string };
+        let lastError: Error | null = null;
+        let saved = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const response = await fetch(SERVER_EXPORT_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(asset),
+            });
+            const result = await response.json() as { ok?: boolean; relativePath?: string; error?: string };
+            if (!response.ok) throw new Error(result.error ?? `VS Code rejected ${asset.fileName}.${asset.extension}.`);
+            savedPaths.push(result.relativePath ?? '');
+            saved = true;
+            break;
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error('Upload failed.');
+            if (attempt < 3) await wait(1000);
+          }
+        }
 
-        if (!response.ok) throw new Error(result.error ?? `VS Code rejected ${asset.fileName}.${asset.extension}.`);
+        if (!saved) throw lastError ?? new Error('Upload failed.');
 
-        savedPaths.push(result.relativePath ?? '');
         setExportProgress({ current: index + 1, detail: `Saved ${index + 1} of ${total} asset${total === 1 ? '' : 's'}.`, total, visible: true });
       }
 
-      showAlert(`Exported ${savedPaths.length} asset${savedPaths.length === 1 ? '' : 's'} to "${relativeDir}".`, 'success', 5000);
+      const successCount = savedPaths.length;
+      const skipCount = figmaFailures.length;
+
+      if (skipCount > 0) {
+        const skippedNames = figmaFailures.map((f) => f.name).join(', ');
+        showAlert(
+          `Exported ${successCount} asset${successCount === 1 ? '' : 's'}. Skipped ${skipCount} (${skippedNames}): layer${skipCount === 1 ? '' : 's'} no longer available in Figma.`,
+          'warning',
+          8000,
+        );
+      } else {
+        showAlert(`Exported ${successCount} asset${successCount === 1 ? '' : 's'} to "${relativeDir}".`, 'success', 5000);
+      }
     } catch (error) {
       showAlert(
         error instanceof Error
@@ -400,6 +461,7 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     handleExportQueue,
     handlePreviewAsset,
     handleRemoveAsset,
+    handleRetryPreview,
     handleSaveAssetEdit,
   };
 }

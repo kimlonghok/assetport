@@ -50,6 +50,7 @@ export interface SelectionStub {
   name: string;
   width: number;
   height: number;
+  previewUrl?: string;
 }
 
 export interface QueuedAsset {
@@ -71,10 +72,11 @@ export type UiToMainMessage =
 
 export type MainToUiMessage =
   | { type: 'selection-captured'; assets: SelectionStub[]; selectedCount: number }
-  | { type: 'selection-context-refreshed'; nodeId: string; name: string; previewUrl: string; previewUrl2x: string; requestedScale: number; width: number; height: number }
+  | { type: 'selection-context-refreshed'; nodeId: string; name: string; previewUrl: string; requestedScale: number; width: number; height: number }
   | { type: 'selection-state-updated'; selectedCount: number; exportableCount: number }
-  | { type: 'asset-queue-ready'; assets: ExportRequest[] }
+  | { type: 'asset-queue-ready'; assets: ExportRequest[]; failures?: { name: string; error: string }[] }
   | { type: 'gemini-key-loaded'; apiKey: string }
+  | { type: 'gemini-key-saved' }
   | { type: 'exporter-settings-loaded'; settings: ExporterSettings }
   | { type: 'exporter-settings-saved'; settings: ExporterSettings }
   | { type: 'selection-error'; error: string }

@@ -7,6 +7,7 @@ interface Props {
   onUpdate: (updated: QueuedAssetItem) => void;
   onRemove: (assetId: string) => void;
   onAIRename: (assetId: string, lastAttemptedName: string) => void;
+  onRetryPreview: (assetId: string) => void;
   aiRenameEnabled: boolean;
   onPreview?: () => void;
 }
@@ -20,9 +21,10 @@ const iconButtonClasses =
 const aiButtonClasses =
   'h-7 shrink-0 px-2 rounded-full transition-colors inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--figma-color-bg-brand)] hover:bg-[color-mix(in_srgb,var(--figma-color-bg-brand)_14%,transparent)]';
 
-export function AssetRow({ asset, onUpdate, onRemove, onAIRename, aiRenameEnabled, onPreview }: Props) {
+export function AssetRow({ asset, onUpdate, onRemove, onAIRename, onRetryPreview, aiRenameEnabled, onPreview }: Props) {
   const isRenaming = asset.status === 'renaming';
   const isProcessing = asset.status === 'processing';
+  const isPreviewFailed = asset.status === 'preview-failed';
   const availableScales: AssetScale[] = asset.type === 'svg' ? [1] : [1, 2, 3, 4];
 
   const [nameDraft, setNameDraft] = useState(asset.name);
@@ -101,6 +103,17 @@ export function AssetRow({ asset, onUpdate, onRemove, onAIRename, aiRenameEnable
                 <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="24" strokeDashoffset="8" />
               </svg>
             </span>
+          ) : isPreviewFailed ? (
+            <button
+              className={iconButtonClasses}
+              onClick={() => onRetryPreview(asset.id)}
+              title="Preview failed — click to retry"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none">
+                <path d="M13.5 8A5.5 5.5 0 1 1 8 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M13.5 2.5v3h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
           ) : aiRenameEnabled ? (
             <button
               className={`${aiButtonClasses} cursor-pointer`}

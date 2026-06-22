@@ -1,16 +1,21 @@
 {
   "name": "assetport",
-  "displayName": "AssetPort",
+  "displayName": "assetport",
   "description": "Export Figma assets directly to your VS Code workspace.",
   "version": "0.1.0",
-  "publisher": "your-publisher-name",
-  "repository": "https://github.com/kimlonghok/figma-asset-exporter",
+  "publisher": "kimlonghok",
+  "repository": "https://github.com/kimlonghok/assetport",
   "engines": {
     "vscode": "^1.90.0"
   },
+  "license": "MIT",
   "categories": [
     "Other"
   ],
+  "galleryBanner": {
+    "color": "#1a1e2e",
+    "theme": "dark"
+  },
   "keywords": [
     "figma",
     "assets",

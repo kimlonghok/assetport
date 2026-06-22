@@ -154,6 +154,14 @@ class AssetPortServer implements vscode.Disposable {
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/workspace') {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      const workspaceRoot = workspaceFolder?.uri.fsPath ?? null;
+      res.writeHead(200, { ...CORS_HEADERS, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ workspaceRoot }));
+      return;
+    }
+
     if (req.method !== 'POST' || req.url !== '/export') {
       res.writeHead(404, { ...CORS_HEADERS, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));

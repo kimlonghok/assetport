@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { ExporterSettings } from '@assetport/shared';
 import { Button } from '../components/Button.tsx';
 import { FloatingAlert } from '../components/FloatingAlert.tsx';
@@ -5,6 +6,7 @@ import { Modal } from '../components/Modal.tsx';
 import { Panel } from '../components/Panel.tsx';
 import { AssetRow } from '../components/AssetRow.tsx';
 import { useAssetExporter } from './useAssetExporter.ts';
+import { DEFAULT_DIR, fetchWorkspaceRoot } from './assetExporterUtils.ts';
 
 interface Props {
   onOpenSettings: () => void;
@@ -33,8 +35,20 @@ export function AssetExporterTool({ onOpenSettings, geminiApiKey, exporterSettin
     handleExportQueue,
     handlePreviewAsset,
     handleRemoveAsset,
+    handleRetryPreview,
     handleSaveAssetEdit,
   } = useAssetExporter({ geminiApiKey, exporterSettings });
+
+  const [pendingDir, setPendingDir] = useState(relativeDir);
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (confirmAction === 'export') {
+      setPendingDir(relativeDir);
+      fetchWorkspaceRoot().then(setWorkspaceRoot);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmAction]);
 
   const aiRenameEnabled = geminiApiKey.trim().length > 0;
 
@@ -92,6 +106,7 @@ export function AssetExporterTool({ onOpenSettings, geminiApiKey, exporterSettin
                 onUpdate={handleSaveAssetEdit}
                 onRemove={handleRemoveAsset}
                 onAIRename={handleAIRename}
+                onRetryPreview={handleRetryPreview}
                 aiRenameEnabled={aiRenameEnabled}
                 onPreview={() => handlePreviewAsset(asset)}
               />
@@ -100,28 +115,56 @@ export function AssetExporterTool({ onOpenSettings, geminiApiKey, exporterSettin
         )}
       </Panel>
 
-      {confirmAction && (
+      {confirmAction === 'clear' && (
         <Modal>
           <div className="flex flex-col gap-3">
             <p className="m-0 text-[14px] font-bold leading-[1.15]">
-              {confirmAction === 'clear'
-                ? `Clear all ${assets.length} asset${assets.length === 1 ? '' : 's'}?`
-                : `Export ${assets.length} asset${assets.length === 1 ? '' : 's'} to "${relativeDir}"?`}
+              Clear all {assets.length} asset{assets.length === 1 ? '' : 's'}?
             </p>
+            <div className="flex gap-2 justify-end">
+              <Button variant="ghost" onClick={() => setConfirmAction(null)}>Cancel</Button>
+              <Button variant="primary" onClick={handleClearQueue}>Clear</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {confirmAction === 'export' && (
+        <Modal>
+          <div className="flex flex-col gap-3">
+            <div>
+              <p className="m-0 mb-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--figma-color-text-secondary)]">
+                Export {assets.length} asset{assets.length === 1 ? '' : 's'} to
+              </p>
+              {workspaceRoot && (
+                <p className="m-0 text-[13px] font-semibold leading-snug break-all text-[var(--figma-color-text)]">
+                  {workspaceRoot}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="export-dir-confirm" className="text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--figma-color-text-secondary)]">
+                Subfolder
+              </label>
+              <input
+                id="export-dir-confirm"
+                type="text"
+                value={pendingDir}
+                onChange={(e) => setPendingDir(e.target.value)}
+                className="w-full min-h-[34px] px-[11px] border border-[var(--figma-color-border)] rounded-[10px] bg-[color-mix(in_srgb,var(--figma-color-bg)_94%,white_2%)] outline-none text-[inherit] font-[inherit] text-[12px]"
+                placeholder={DEFAULT_DIR}
+              />
+            </div>
             <div className="flex gap-2 justify-end">
               <Button variant="ghost" onClick={() => setConfirmAction(null)}>Cancel</Button>
               <Button
                 variant="primary"
                 onClick={() => {
-                  if (confirmAction === 'clear') {
-                    handleClearQueue();
-                  } else {
-                    handleExportQueue();
-                    setConfirmAction(null);
-                  }
+                  handleExportQueue(pendingDir);
+                  setConfirmAction(null);
                 }}
               >
-                Confirm
+                Export
               </Button>
             </div>
           </div>

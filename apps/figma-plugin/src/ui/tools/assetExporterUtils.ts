@@ -9,6 +9,17 @@ export const DEFAULT_TYPE: AssetFormat = 'png';
 export const DEFAULT_SCALE: AssetScale = 2;
 export const SERVER_EXPORT_URL = `${SERVER_BASE_URL}/export`;
 
+export async function fetchWorkspaceRoot(): Promise<string | null> {
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/workspace`, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) return null;
+    const result = await response.json() as { workspaceRoot?: string | null };
+    return result.workspaceRoot ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Default lossy compression quality (0–100) for PNG/JPEG exports; 100 keeps PNGs lossless. */
 export const DEFAULT_COMPRESSION_QUALITY = 75;
 
@@ -128,18 +139,14 @@ export function makeUniqueName(baseName: string, existingNames: string[]): strin
 export interface AssetWithPreviews {
   type: AssetFormat;
   scale: AssetScale;
-  previewUrl?: string;
-  previewUrl1x?: string;
-  previewUrl2x?: string;
-  [key: string]: unknown;
+  previews: Record<number, string>;
+  previewUrl: string;
 }
 
 export function getCachedPreviewForScale(asset: AssetWithPreviews): string {
-  if (asset.type === 'svg') return (asset.previewUrl1x ?? asset.previewUrl2x ?? asset.previewUrl) as string;
-  if (asset.scale === 1) return (asset.previewUrl1x ?? asset.previewUrl2x ?? asset.previewUrl) as string;
-  if (asset.scale === 2) return (asset.previewUrl2x ?? asset.previewUrl) as string;
-  if (asset.scale >= 3) return (asset[`previewUrl${asset.scale}x`] ?? asset.previewUrl2x ?? asset.previewUrl) as string;
-  return (asset.previewUrl2x ?? asset.previewUrl) as string;
+  const { scale, previews, type } = asset;
+  if (type === 'svg') return previews[1] ?? previews[2] ?? asset.previewUrl ?? '';
+  return previews[scale] ?? previews[2] ?? previews[1] ?? asset.previewUrl ?? '';
 }
 
 export function refreshPreviewAtScale(asset: { nodeId: string; scale: AssetScale; type: AssetFormat }): void {
@@ -168,13 +175,19 @@ export async function requestGeminiNameSuggestions(params: GeminiNameSuggestions
   if (lastAttemptedName) contextParts.push(`Last attempted name (do NOT use this again): ${lastAttemptedName}`);
   const contextText = contextParts.length > 0 ? '\n\n' + contextParts.join('\n') : '';
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        contents: [
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [
           {
             parts: [
               {
@@ -201,6 +214,9 @@ export async function requestGeminiNameSuggestions(params: GeminiNameSuggestions
       }),
     },
   );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 
   const result = await response.json() as {
     error?: { message?: string };
