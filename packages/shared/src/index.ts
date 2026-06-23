@@ -82,11 +82,18 @@ export interface QueuedAsset {
   ignoredNodeIds?: string[];
   /** Source layers merged into a single asset. Present only for "combined" assets (length >= 2). */
   nodeIds?: string[];
+  /**
+   * Pre-rendered base64 image bytes (no data-URL prefix). Present only for "section" assets that
+   * were cropped in the UI from a screenshot — these have no backing Figma node, so the main thread
+   * exports the bytes as-is instead of calling exportAsync.
+   */
+  imageData?: string;
 }
 
 export type UiToMainMessage =
   | { type: 'capture-selection'; scale?: number }
   | { type: 'capture-combined-selection'; scale?: number }
+  | { type: 'capture-section-source'; scale?: number }
   | { type: 'refresh-selection-context'; nodeId: string; scale: number; assetType?: string; ignoredNodeIds?: string[]; nodeIds?: string[] }
   | { type: 'capture-ignore-selection'; assetId: string; parentNodeId: string; parentNodeIds?: string[] }
   | { type: 'request-selection-state' }
@@ -98,6 +105,8 @@ export type UiToMainMessage =
 
 export type MainToUiMessage =
   | { type: 'selection-captured'; assets: SelectionStub[]; selectedCount: number }
+  | { type: 'section-source-captured'; previewUrl: string; width: number; height: number; name: string }
+  | { type: 'section-error'; error: string }
   | { type: 'selection-context-refreshed'; nodeId: string; name: string; previewUrl: string; requestedScale: number; width: number; height: number }
   | { type: 'ignore-selection-captured'; assetId: string; nodes: IgnoredNode[]; invalidCount: number }
   | { type: 'selection-state-updated'; selectedCount: number; exportableCount: number }

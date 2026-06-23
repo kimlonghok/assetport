@@ -5,6 +5,7 @@ import { FloatingAlert } from '../components/FloatingAlert.tsx';
 import { Modal } from '../components/Modal.tsx';
 import { Panel } from '../components/Panel.tsx';
 import { AssetRow } from '../components/AssetRow.tsx';
+import { SectionCropperModal } from '../components/SectionCropperModal.tsx';
 import { useAssetExporter } from './useAssetExporter.ts';
 import { DEFAULT_DIR, fetchWorkspaceRoot } from './assetExporterUtils.ts';
 
@@ -23,16 +24,21 @@ export function AssetExporterTool({ onOpenSettings, geminiApiKey, exporterSettin
     exportProgress,
     ignoreEditorAssetId,
     isAdding,
+    isCapturingSection,
     isExporting,
     previewAsset,
     relativeDir,
+    sectionSource,
     selectedCountLabel,
     selectionState,
     setConfirmAction,
     setPreviewAsset,
     handleAIRename,
     handleAddAsset,
+    handleAddSections,
+    handleCancelSection,
     handleCombineAssets,
+    handleStartSection,
     handleAddIgnoreSelection,
     handleClearQueue,
     handleCloseIgnoreEditor,
@@ -95,6 +101,14 @@ export function AssetExporterTool({ onOpenSettings, geminiApiKey, exporterSettin
               {isAdding ? 'Working...' : `Combine ${selectionState.exportableCount}`}
             </Button>
           )}
+          <Button
+            variant="ghost"
+            onClick={handleStartSection}
+            disabled={isCapturingSection || selectionState.exportableCount === 0}
+            title="Screenshot the selection and slice it into stacked sections"
+          >
+            {isCapturingSection ? 'Capturing...' : 'Section'}
+          </Button>
           <Button variant="primary" onClick={handleAddAsset} disabled={isAdding || selectionState.exportableCount === 0}>
             {isAdding ? 'Adding...' : selectionState.exportableCount > 0 ? `Add ${selectionState.exportableCount}` : 'Add'}
           </Button>
@@ -379,6 +393,15 @@ export function AssetExporterTool({ onOpenSettings, geminiApiKey, exporterSettin
             </div>
           </div>
         </Modal>
+      )}
+
+      {sectionSource && (
+        <SectionCropperModal
+          source={sectionSource}
+          defaultFormat={exporterSettings.defaultType === 'jpeg' ? 'jpeg' : 'png'}
+          onCancel={handleCancelSection}
+          onAdd={handleAddSections}
+        />
       )}
 
       {isExporting && exportProgress.visible && (

@@ -30,6 +30,9 @@ export function AssetRow({ asset, onUpdate, onRemove, onAIRename, onRetryPreview
   const ignoreCount = asset.ignoredNodes?.length ?? 0;
   const combinedCount = asset.nodeIds?.length ?? 0;
   const isCombined = combinedCount > 1;
+  // Section assets are pre-cropped image bytes with no node — type/scale are baked in and there's
+  // nothing to ignore, so we hide those controls and show a static badge instead.
+  const isSection = asset.imageData != null;
 
   const [nameDraft, setNameDraft] = useState(asset.name);
   const isFocusedRef = useRef(false);
@@ -132,7 +135,7 @@ export function AssetRow({ asset, onUpdate, onRemove, onAIRename, onRetryPreview
             </button>
           ) : null}
 
-          {isCombined ? (
+          {isSection ? null : isCombined ? (
             <button
               className={`${iconButtonClasses} relative text-[var(--figma-color-bg-brand)]`}
               onClick={() => onOpenIgnore(asset.id)}
@@ -176,24 +179,37 @@ export function AssetRow({ asset, onUpdate, onRemove, onAIRename, onRetryPreview
           </button>
         </div>
 
-        <div className="flex gap-2">
-          <select className={`${fieldClasses} flex-1`} value={asset.type} onChange={handleTypeChange} aria-label="Export type">
-            <option value="png">png</option>
-            <option value="svg">svg</option>
-            <option value="jpeg">jpeg</option>
-          </select>
-          <select
-            className={`${fieldClasses} flex-1`}
-            value={asset.scale}
-            onChange={handleScaleChange}
-            disabled={asset.type === 'svg'}
-            aria-label="Resolution"
-          >
-            {availableScales.map((scale) => (
-              <option key={scale} value={scale}>{scale}x</option>
-            ))}
-          </select>
-        </div>
+        {isSection ? (
+          <div className="flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--figma-color-bg-secondary)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.06em] text-[var(--figma-color-text-secondary)]">
+              <svg className="h-3 w-3" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="2" width="12" height="5" rx="1" stroke="currentColor" strokeWidth="1.3" />
+                <rect x="2" y="9" width="12" height="5" rx="1" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
+              Section
+            </span>
+            <span className="text-[10px] font-bold uppercase tracking-[0.06em] text-[var(--figma-color-text-tertiary)]">{asset.type}</span>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <select className={`${fieldClasses} flex-1`} value={asset.type} onChange={handleTypeChange} aria-label="Export type">
+              <option value="png">png</option>
+              <option value="svg">svg</option>
+              <option value="jpeg">jpeg</option>
+            </select>
+            <select
+              className={`${fieldClasses} flex-1`}
+              value={asset.scale}
+              onChange={handleScaleChange}
+              disabled={asset.type === 'svg'}
+              aria-label="Resolution"
+            >
+              {availableScales.map((scale) => (
+                <option key={scale} value={scale}>{scale}x</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
     </div>
   );

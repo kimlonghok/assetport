@@ -25,6 +25,12 @@ export default function (): void {
         return;
       }
 
+      if (message.type === 'capture-section-source') {
+        const source = await getSectionSourceImage(message.scale ?? 2);
+        send({ type: 'section-source-captured', ...source });
+        return;
+      }
+
       if (message.type === 'refresh-selection-context') {
         if (Array.isArray(message.nodeIds) && message.nodeIds.length > 1) {
           const preview = await getCombinedSelectionContext(message.nodeId, message.nodeIds, message.scale, message.ignoredNodeIds);
@@ -151,6 +157,29 @@ async function getCombinedSelectionAsset(scale: number): Promise<SelectionStub &
     width: getRoundedDimension(width, 1),
     height: getRoundedDimension(height, 1),
     previewUrl: `data:image/png;base64,${bytesToBase64(bytes)}`,
+  };
+}
+
+/**
+ * Renders the current selection as a single PNG to be sliced into sections in the UI.
+ * One layer exports directly; multiple layers are merged into one image via the same
+ * temp-frame approach used for combined assets.
+ */
+async function getSectionSourceImage(scale: number): Promise<{ previewUrl: string; width: number; height: number; name: string }> {
+  const nodes = getSelectedExportableNodes();
+
+  if (nodes.length === 1) {
+    const node = nodes[0];
+    const { previewUrl, width, height } = await exportNodePreview(node, scale);
+    return { previewUrl, width, height, name: node.name || 'section' };
+  }
+
+  const { bytes, width, height } = await exportCombinedNodes(nodes, 'PNG', scale);
+  return {
+    previewUrl: `data:image/png;base64,${bytesToBase64(bytes)}`,
+    width: getRoundedDimension(width, scale),
+    height: getRoundedDimension(height, scale),
+    name: nodes[0].name || 'section',
   };
 }
 
@@ -340,7 +369,7 @@ async function buildSelectionContext(node: SceneNode & { exportAsync: Exportable
 }
 
 async function exportQueuedAssets(
-  assets: { nodeId: string; name: string; type: string; scale: number; ignoredNodeIds?: string[]; nodeIds?: string[] }[],
+  assets: { nodeId: string; name: string; type: string; scale: number; ignoredNodeIds?: string[]; nodeIds?: string[]; imageData?: string }[],
   relativeDir: string,
   compressionQuality?: number,
 ): Promise<{ assets: ExportRequest[]; failures: { name: string; error: string }[] }> {
@@ -354,6 +383,18 @@ async function exportQueuedAssets(
 
   for (const asset of assets) {
     try {
+      // Section assets carry their own pre-cropped bytes — there's no node to export.
+      if (typeof asset.imageData === 'string' && asset.imageData) {
+        exportedAssets.push({
+          fileName: sanitizeFileName(asset.name || 'section'),
+          extension: asset.type as ExportRequest['extension'],
+          relativeDir: buildRelativeDir(relativeDir),
+          base64Data: asset.imageData,
+          compressionQuality: quality,
+        });
+        continue;
+      }
+
       const format = normalizeFormat(asset.type);
       let bytes: Uint8Array;
       let fallbackName: string;
@@ -497,6 +538,7 @@ function normalizeExporterScale(value: number, assetType: string): ExporterSetti
 
 function mapErrorType(actionType: string): MainToUiMessage['type'] {
   if (actionType === 'capture-selection' || actionType === 'capture-ignore-selection') return 'selection-error';
+  if (actionType === 'capture-section-source') return 'section-error';
   if (actionType === 'refresh-selection-context') return 'preview-error';
   if (actionType === 'load-exporter-settings' || actionType === 'save-exporter-settings') return 'settings-error';
   if (actionType === 'load-gemini-key' || actionType === 'save-gemini-key') return 'settings-error';

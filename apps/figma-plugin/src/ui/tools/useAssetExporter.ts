@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AssetFormat, AssetScale, CombinedMember, ExportRequest, ExporterSettings, IgnoredNode, MainToUiMessage } from '@assetport/shared';
+import type { CroppedSection, SectionSource } from '../components/SectionCropperModal.tsx';
 import {
   DEFAULT_DIR,
   SERVER_EXPORT_URL,
@@ -31,6 +32,11 @@ export interface QueuedAssetItem {
   nameSuggestions?: string[];
   /** Descendant layers hidden when this asset is exported. */
   ignoredNodes?: IgnoredNode[];
+  /**
+   * Pre-cropped base64 image bytes (no data-URL prefix). Present only for "section" assets sliced
+   * from a screenshot. These have no Figma node, so preview refresh / ignore / combine don't apply.
+   */
+  imageData?: string;
 }
 
 interface PreviewAsset extends QueuedAssetItem {
@@ -58,6 +64,8 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     normalizeAssetScale(exporterSettings.defaultScale, exporterSettings.defaultType),
   );
   const [isAdding, setIsAdding] = useState(false);
+  const [isCapturingSection, setIsCapturingSection] = useState(false);
+  const [sectionSource, setSectionSource] = useState<SectionSource | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'clear' | 'export' | null>(null);
   const [assets, setAssets] = useState<QueuedAssetItem[]>([]);
@@ -138,6 +146,18 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
           selectedCount: Number(message.selectedCount) || 0,
           exportableCount: Number(message.exportableCount) || 0,
         });
+        return;
+      }
+
+      if (message.type === 'section-source-captured') {
+        setIsCapturingSection(false);
+        setSectionSource({ url: message.previewUrl, width: message.width, height: message.height, name: message.name });
+        return;
+      }
+
+      if (message.type === 'section-error') {
+        setIsCapturingSection(false);
+        showAlert(message.error, 'error', 6000);
         return;
       }
 
@@ -352,6 +372,47 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     window.parent.postMessage({ pluginMessage: { type: 'capture-combined-selection', scale: 2 } }, '*');
   };
 
+  /** Screenshots the current selection so it can be sliced into sections in the cropper modal. */
+  const handleStartSection = () => {
+    setIsCapturingSection(true);
+    window.parent.postMessage({ pluginMessage: { type: 'capture-section-source', scale: 2 } }, '*');
+  };
+
+  const handleCancelSection = () => setSectionSource(null);
+
+  /** Adds each cropped section to the queue as an image-backed asset, then closes the cropper. */
+  const handleAddSections = (sections: CroppedSection[]) => {
+    if (!sections.length) {
+      setSectionSource(null);
+      return;
+    }
+
+    const existingNames = assetsRef.current.map((a) => a.name);
+    const stamp = Date.now();
+    const newItems: QueuedAssetItem[] = sections.map((section, index) => {
+      const uniqueName = makeUniqueName(section.name, existingNames);
+      existingNames.push(uniqueName);
+      return {
+        id: `section-${stamp}-${index}`,
+        // Synthetic id — section assets have no Figma node. Export keys off imageData, not this.
+        nodeId: `section:${stamp}-${index}`,
+        name: uniqueName,
+        type: section.type,
+        scale: 2,
+        previews: { 2: section.previewUrl },
+        previewUrl: section.previewUrl,
+        width: section.width,
+        height: section.height,
+        status: 'ready',
+        imageData: section.imageData,
+      };
+    });
+
+    setAssets((cur) => [...newItems, ...cur]);
+    setSectionSource(null);
+    showAlert(`Added ${newItems.length} section${newItems.length === 1 ? '' : 's'} to the queue.`, 'success');
+  };
+
   const handleSaveAssetEdit = (updated: QueuedAssetItem) => {
     const existingNames = assetsRef.current.filter((a) => a.id !== updated.id).map((a) => a.name);
     const uniqueName = makeUniqueName(updated.name, existingNames);
@@ -363,7 +424,8 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
 
   const handlePreviewAsset = (asset: QueuedAssetItem) => {
     setPreviewAsset({ ...asset, currentPreviewUrl: getCachedPreviewForScale(asset), zoom: 1 });
-    refreshPreviewAtScale(asset);
+    // Section assets are static crops with no backing node — nothing to re-render.
+    if (!asset.imageData) refreshPreviewAtScale(asset);
   };
 
   const handleRemoveAsset = (assetId: string) => {
@@ -466,6 +528,7 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
             type: a.type,
             scale: a.scale,
             ignoredNodeIds: (a.ignoredNodes ?? []).map((n) => n.nodeId),
+            imageData: a.imageData,
           })),
         },
       },
@@ -545,9 +608,11 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     exportProgress,
     ignoreEditorAssetId,
     isAdding,
+    isCapturingSection,
     isExporting,
     previewAsset,
     relativeDir,
+    sectionSource,
     currentSelectionLabel,
     selectedCountLabel,
     selectionState,
@@ -556,7 +621,10 @@ export function useAssetExporter({ geminiApiKey, exporterSettings }: { geminiApi
     setPreviewAsset,
     handleAIRename,
     handleAddAsset,
+    handleAddSections,
+    handleCancelSection,
     handleCombineAssets,
+    handleStartSection,
     handleAddIgnoreSelection,
     handleCancelAssetEdit,
     handleClearQueue,
