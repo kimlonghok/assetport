@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ExporterSettings, MainToUiMessage } from '@assetport/shared';
 import { SettingsTool } from './tools/SettingsTool.tsx';
 import { AssetExporterTool } from './tools/AssetExporterTool.tsx';
+import { BuilderTool } from './tools/BuilderTool.tsx';
 import {
   DEFAULT_COMPRESSION_QUALITY,
   DEFAULT_DIR,
@@ -14,10 +15,11 @@ import {
   normalizeCompressionQuality,
 } from './tools/assetExporterUtils.ts';
 
-type ViewId = 'asset-exporter' | 'settings';
+type ToolId = 'asset-exporter' | 'builder';
 
 function App() {
-  const [view, setView] = useState<ViewId>('asset-exporter');
+  const [tool, setTool] = useState<ToolId>('asset-exporter');
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const geminiApiKeyRef = useRef('');
   const [geminiSaveStatus, setGeminiSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -103,7 +105,7 @@ function App() {
   };
 
   const settingsProps = {
-    onBack: () => setView('asset-exporter'),
+    onBack: () => setSettingsOpen(false),
     geminiApiKey,
     setGeminiApiKey,
     geminiSaveStatus,
@@ -116,14 +118,38 @@ function App() {
   return (
     <div className="min-h-screen p-[14px]">
       <div className="flex flex-col gap-3">
-        {view === 'settings' && <SettingsTool {...settingsProps} />}
-        {/* Keep the exporter mounted so its in-progress asset list survives a trip to Settings. */}
-        <div className={view === 'settings' ? 'hidden' : 'contents'}>
-          <AssetExporterTool
-            onOpenSettings={() => setView('settings')}
-            geminiApiKey={geminiApiKey}
-            exporterSettings={exporterSettings}
-          />
+        {settingsOpen && <SettingsTool {...settingsProps} />}
+        {/* Keep both tools mounted so their in-progress state survives tab switches and Settings trips. */}
+        <div className={settingsOpen ? 'hidden' : 'flex flex-col gap-3'}>
+          <div className="flex rounded-full bg-[var(--figma-color-bg-secondary)] p-0.5">
+            {([
+              { id: 'asset-exporter', label: 'Assets' },
+              { id: 'builder', label: 'Builder' },
+            ] as const).map(({ id, label }) => (
+              <button
+                key={id}
+                onClick={() => setTool(id)}
+                className={`flex-1 min-h-[28px] rounded-full text-[12px] font-bold transition-colors ${
+                  tool === id
+                    ? 'bg-[var(--figma-color-bg)] text-[var(--figma-color-text)] shadow-[0_1px_3px_rgba(15,23,42,0.12)]'
+                    : 'bg-transparent text-[var(--figma-color-text-secondary)] hover:text-[var(--figma-color-text)]'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className={tool === 'asset-exporter' ? 'contents' : 'hidden'}>
+            <AssetExporterTool
+              onOpenSettings={() => setSettingsOpen(true)}
+              geminiApiKey={geminiApiKey}
+              exporterSettings={exporterSettings}
+            />
+          </div>
+          <div className={tool === 'builder' ? 'contents' : 'hidden'}>
+            <BuilderTool />
+          </div>
         </div>
       </div>
     </div>

@@ -32,6 +32,13 @@ export interface ErrorResponse {
   error: string;
 }
 
+/** Writes an arbitrary text file (e.g. the Builder's manifest) inside the workspace. */
+export interface ExportManifestRequest {
+  relativeDir: string;
+  fileName: string;
+  content: string;
+}
+
 export interface ExporterSettings {
   relativeDir: string;
   defaultType: AssetFormat;
@@ -84,6 +91,169 @@ export interface QueuedAsset {
   nodeIds?: string[];
 }
 
+// Builder — a layout spec (a list of nodes) the AI can rebuild pixel-perfect.
+
+/** What a Builder node represents. Every type is backed by a Figma layer and exports an image. */
+export type BuilderNodeType = 'asset' | 'text' | 'info';
+
+/** Position/size of a captured layer, in screen-relative pixels (1x). */
+export interface BuilderRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BuilderFont {
+  /** `'mixed'` when a text layer uses more than one size. */
+  size: number | 'mixed';
+  family: string;
+  /** Figma style name, e.g. `Regular`, `Bold`, `SemiBold Italic`. */
+  style: string;
+  /** Numeric font weight (e.g. 400, 700). Omitted when the layer mixes weights. */
+  weight?: number;
+}
+
+export interface BuilderGradientStop {
+  /** 0–1 position of the stop along the gradient. */
+  position: number;
+  /** Stop colour as `#rrggbb` or `#rrggbbaa`. */
+  color: string;
+}
+
+/** A gradient fill read off a layer. */
+export interface BuilderGradient {
+  type: 'linear' | 'radial' | 'angular' | 'diamond';
+  stops: BuilderGradientStop[];
+}
+
+/** Typography read off one text layer — the node itself or a nested descendant. */
+export interface BuilderTextStyle {
+  /** Layer name, useful when a text node nests several text layers. */
+  name: string;
+  /** The layer's text content. */
+  text: string;
+  font: BuilderFont;
+  /** Text colour as `#rrggbb`, when painted with a solid fill. */
+  color?: string;
+  /** Gradient text fill, when the layer is painted with one. */
+  gradient?: BuilderGradient;
+  textAlign?: string;
+  /** Resolved line height in px, or `'auto'`. */
+  lineHeight?: number | 'auto';
+  letterSpacing?: number;
+  /** Position/size of the text layer, in screen-relative pixels (1x). */
+  rect?: BuilderRect;
+}
+
+/** A single fill (solid colour or gradient) read off an info layer or a nested descendant. */
+export interface BuilderFillStyle {
+  /** Layer name, useful when an info node nests several painted layers. */
+  name: string;
+  /** Fill colour as `#rrggbb`, when the layer has a solid fill. */
+  color?: string;
+  /** Gradient fill, when the layer is painted with one. */
+  gradient?: BuilderGradient;
+  /** Position/size of the layer, in screen-relative pixels (1x). */
+  rect?: BuilderRect;
+}
+
+/** The frame that defines the Builder's coordinate space; all rects are relative to it. */
+export interface BuilderScreen {
+  nodeId: string;
+  name: string;
+  width: number;
+  height: number;
+}
+
+/** A child layer of a captured Builder node, which the user can toggle off to exclude from the exported image. */
+export interface BuilderChildLayer {
+  nodeId: string;
+  name: string;
+  /** Figma node type, e.g. `TEXT`, `RECTANGLE`, `GROUP`. */
+  type: string;
+  /** Small 1x PNG data-URL preview of the child layer. */
+  previewUrl?: string;
+}
+
+/** Data read off a Figma layer when a node is captured. */
+export interface BuilderNodeCapture {
+  nodeId: string;
+  type: BuilderNodeType;
+  name: string;
+  /** Small PNG data-URL thumbnail for the node list. */
+  previewUrl?: string;
+  /** Immediate child layers the user can hide before export, plus any manually added layers. */
+  children?: BuilderChildLayer[];
+  rect?: BuilderRect;
+  /** Text content (text type only). */
+  text?: string;
+  font?: BuilderFont;
+  /** Solid fill / text colour as `#rrggbb`. */
+  color?: string;
+  /** Gradient fill, when the layer is painted with one. */
+  gradient?: BuilderGradient;
+  textAlign?: string;
+  /** Resolved line height in px, or `'auto'`. */
+  lineHeight?: number | 'auto';
+  letterSpacing?: number;
+  /** Every text layer found in the node and its descendants (text type only). */
+  textLayers?: BuilderTextStyle[];
+  /** Every painted layer (colour/gradient) found in the node and its descendants (info type only). */
+  fillLayers?: BuilderFillStyle[];
+}
+
+/** A node as sent back to the main thread for export. */
+export interface BuilderExportNode {
+  id: string;
+  type: BuilderNodeType;
+  name: string;
+  nodeId?: string;
+  /** Image format for the exported asset. */
+  assetType?: AssetFormat;
+  /** Descendant node ids to hide before exporting this node's image. */
+  ignoredNodeIds?: string[];
+  rect?: BuilderRect;
+  text?: string;
+  font?: BuilderFont;
+  color?: string;
+  gradient?: BuilderGradient;
+  textAlign?: string;
+  lineHeight?: number | 'auto';
+  letterSpacing?: number;
+  /** Every text layer found in the node and its descendants (text type only). */
+  textLayers?: BuilderTextStyle[];
+  /** Every painted layer (colour/gradient) found in the node and its descendants (info type only). */
+  fillLayers?: BuilderFillStyle[];
+}
+
+export interface BuilderManifestNode {
+  order: number;
+  type: BuilderNodeType;
+  name: string;
+  /** Workspace-relative path to the exported asset. */
+  asset?: string;
+  rect?: BuilderRect;
+  color?: string;
+  gradient?: BuilderGradient;
+  text?: string;
+  font?: BuilderFont;
+  textAlign?: string;
+  lineHeight?: number | 'auto';
+  letterSpacing?: number;
+  /** Every text layer found in the node and its descendants (text type only). */
+  textLayers?: BuilderTextStyle[];
+  /** Every painted layer (colour/gradient) found in the node and its descendants (info type only). */
+  fillLayers?: BuilderFillStyle[];
+}
+
+export interface BuilderManifest {
+  version: number;
+  generatedAt: string;
+  screen: { name: string; width: number; height: number; asset?: string } | null;
+  nodes: BuilderManifestNode[];
+}
+
 export type UiToMainMessage =
   | { type: 'capture-selection'; scale?: number }
   | { type: 'capture-combined-selection'; scale?: number }
@@ -94,7 +264,12 @@ export type UiToMainMessage =
   | { type: 'load-gemini-key' }
   | { type: 'load-exporter-settings' }
   | { type: 'save-gemini-key'; apiKey: string }
-  | { type: 'save-exporter-settings'; settings: ExporterSettings };
+  | { type: 'save-exporter-settings'; settings: ExporterSettings }
+  | { type: 'set-builder-screen' }
+  | { type: 'capture-builder-node'; nodeType: BuilderNodeType; screenNodeId?: string }
+  | { type: 'capture-builder-child'; nodeItemId: string }
+  | { type: 'refresh-builder-preview'; nodeItemId: string; nodeId: string; ignoredNodeIds?: string[] }
+  | { type: 'export-builder'; relativeDir: string; screen: BuilderScreen | null; nodes: BuilderExportNode[]; compressionQuality?: number };
 
 export type MainToUiMessage =
   | { type: 'selection-captured'; assets: SelectionStub[]; selectedCount: number }
@@ -106,7 +281,13 @@ export type MainToUiMessage =
   | { type: 'gemini-key-saved' }
   | { type: 'exporter-settings-loaded'; settings: ExporterSettings }
   | { type: 'exporter-settings-saved'; settings: ExporterSettings }
+  | { type: 'builder-screen-set'; screen: BuilderScreen }
+  | { type: 'builder-node-captured'; node: BuilderNodeCapture }
+  | { type: 'builder-child-captured'; nodeItemId: string; child: BuilderChildLayer }
+  | { type: 'builder-preview-refreshed'; nodeItemId: string; previewUrl: string }
+  | { type: 'builder-export-ready'; images: ExportRequest[]; manifest: { fileName: string; content: string }; failures?: { name: string; error: string }[] }
   | { type: 'selection-error'; error: string }
   | { type: 'preview-error'; nodeId: string; requestedScale: number; error: string }
   | { type: 'export-error'; error: string }
+  | { type: 'builder-error'; error: string }
   | { type: 'settings-error'; error: string };

@@ -1,4 +1,16 @@
 import type {
+  BuilderChildLayer,
+  BuilderExportNode,
+  BuilderFillStyle,
+  BuilderFont,
+  BuilderGradient,
+  BuilderManifest,
+  BuilderManifestNode,
+  BuilderNodeCapture,
+  BuilderNodeType,
+  BuilderRect,
+  BuilderScreen,
+  BuilderTextStyle,
   ExportRequest,
   ExporterSettings,
   MainToUiMessage,
@@ -78,6 +90,36 @@ export default function (): void {
         const nextSettings = sanitizeExporterSettings(message.settings);
         await figma.clientStorage.setAsync('assetExporterSettings', nextSettings);
         send({ type: 'exporter-settings-saved', settings: nextSettings });
+        return;
+      }
+
+      if (message.type === 'set-builder-screen') {
+        const screen = captureBuilderScreen();
+        send({ type: 'builder-screen-set', screen });
+        return;
+      }
+
+      if (message.type === 'capture-builder-node') {
+        const node = await captureBuilderNode(message.nodeType, message.screenNodeId);
+        send({ type: 'builder-node-captured', node });
+        return;
+      }
+
+      if (message.type === 'capture-builder-child') {
+        const child = await captureBuilderChild();
+        send({ type: 'builder-child-captured', nodeItemId: message.nodeItemId, child });
+        return;
+      }
+
+      if (message.type === 'refresh-builder-preview') {
+        const previewUrl = await renderBuilderPreview(message.nodeId, message.ignoredNodeIds);
+        send({ type: 'builder-preview-refreshed', nodeItemId: message.nodeItemId, previewUrl });
+        return;
+      }
+
+      if (message.type === 'export-builder') {
+        const result = await exportBuilder(message.nodes, message.screen, message.relativeDir, message.compressionQuality);
+        send({ type: 'builder-export-ready', ...result });
         return;
       }
 
@@ -396,6 +438,380 @@ async function exportQueuedAssets(
 }
 
 
+// --- Builder ---------------------------------------------------------------
+
+/** Captures the first selected layer as the Builder's screen/coordinate root. */
+function captureBuilderScreen(): BuilderScreen {
+  const node = figma.currentPage.selection[0];
+  if (!node) throw new Error('Select the screen frame in Figma, then set it as the screen.');
+  const rect = getAbsoluteRect(node);
+  return {
+    nodeId: node.id,
+    name: node.name || 'screen',
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+  };
+}
+
+/** Reads geometry, text, colour and gradient off the selected layer for one Builder node. */
+async function captureBuilderNode(
+  type: BuilderNodeType,
+  screenNodeId?: string,
+): Promise<BuilderNodeCapture> {
+  const node = figma.currentPage.selection[0];
+  if (!node) throw new Error('Select a layer in Figma to add it as a node.');
+
+  const origin = await getScreenOrigin(screenNodeId);
+  const rect = getRelativeRect(node, origin);
+
+  const capture: BuilderNodeCapture = {
+    nodeId: node.id,
+    type,
+    name: node.name || type,
+    rect,
+  };
+
+  if (typeof (node as ExportableNode).exportAsync === 'function') {
+    try {
+      capture.previewUrl = (await exportNodePreview(node as ExportableSceneNode, 1)).previewUrl;
+    } catch {
+      // Thumbnail is best-effort.
+    }
+  }
+
+  if (type !== 'text' && 'children' in node) {
+    capture.children = await collectBuilderChildren(node as ChildrenMixin & SceneNode);
+  }
+
+  if (type === 'asset') {
+    // Assets are about the image only — no typography or fill metadata is captured.
+    return capture;
+  }
+
+  if (type === 'text') {
+    // Pull every text layer in the node tree: content, font (family/style/weight/size) and colour.
+    const textLayers = collectTextStyles(node, origin);
+    if (textLayers.length) {
+      capture.textLayers = textLayers;
+      // Mirror the first layer onto the top-level fields so the card has a quick summary.
+      const primary = textLayers[0];
+      capture.text = primary.text;
+      capture.font = primary.font;
+      capture.color = primary.color;
+      capture.gradient = primary.gradient;
+      capture.textAlign = primary.textAlign;
+      capture.lineHeight = primary.lineHeight;
+      capture.letterSpacing = primary.letterSpacing;
+    }
+    return capture;
+  }
+
+  // info — pull every painted layer in the node tree: colour, gradient and size.
+  const fillLayers = collectFillStyles(node, origin);
+  if (fillLayers.length) {
+    capture.fillLayers = fillLayers;
+    const primary = fillLayers[0];
+    capture.color = primary.color;
+    capture.gradient = primary.gradient;
+  }
+
+  return capture;
+}
+
+/** Walks a node tree and reads the typography off every visible text layer it contains. */
+function collectTextStyles(root: SceneNode, origin: { x: number; y: number }): BuilderTextStyle[] {
+  const styles: BuilderTextStyle[] = [];
+  const visit = (node: SceneNode) => {
+    if (node.visible === false) return;
+    if (node.type === 'TEXT') styles.push(readTextStyle(node as TextNode, origin));
+    if ('children' in node) {
+      for (const child of (node as ChildrenMixin).children) visit(child as SceneNode);
+    }
+  };
+  visit(root);
+  return styles;
+}
+
+function readTextStyle(node: TextNode, origin: { x: number; y: number }): BuilderTextStyle {
+  return {
+    name: node.name || 'text',
+    text: node.characters,
+    font: readBuilderFont(node),
+    color: getSolidFillHex(node.fills),
+    gradient: readBuilderGradient(node.fills),
+    textAlign: String(node.textAlignHorizontal),
+    lineHeight: readLineHeight(node),
+    letterSpacing: readLetterSpacing(node),
+    rect: getRelativeRect(node, origin),
+  };
+}
+
+/** Walks a node tree and reads the colour/gradient + size off every visible painted layer it contains. */
+function collectFillStyles(root: SceneNode, origin: { x: number; y: number }): BuilderFillStyle[] {
+  const styles: BuilderFillStyle[] = [];
+  const visit = (node: SceneNode) => {
+    if (node.visible === false) return;
+    if ('fills' in node) {
+      const color = getSolidFillHex((node as GeometryMixin).fills);
+      const gradient = readBuilderGradient((node as GeometryMixin).fills);
+      if (color || gradient) {
+        styles.push({ name: node.name || node.type, color, gradient, rect: getRelativeRect(node, origin) });
+      }
+    }
+    if ('children' in node) {
+      for (const child of (node as ChildrenMixin).children) visit(child as SceneNode);
+    }
+  };
+  visit(root);
+  return styles;
+}
+
+/** Captures the currently selected layer as a child entry to add to a node's Layers list. */
+async function captureBuilderChild(): Promise<BuilderChildLayer> {
+  const node = figma.currentPage.selection[0];
+  if (!node) throw new Error('Select a layer in Figma to add it to this node.');
+  const entry: BuilderChildLayer = { nodeId: node.id, name: node.name || node.type, type: node.type };
+  if (typeof (node as ExportableNode).exportAsync === 'function') {
+    try {
+      entry.previewUrl = (await exportNodePreview(node as ExportableSceneNode, 1)).previewUrl;
+    } catch {
+      // Thumbnail is best-effort — the UI falls back to a type icon.
+    }
+  }
+  return entry;
+}
+
+/** Lists a node layer's immediate children so the user can toggle which ones to bake into the image. */
+async function collectBuilderChildren(node: ChildrenMixin & SceneNode): Promise<BuilderChildLayer[]> {
+  const children: BuilderChildLayer[] = [];
+  for (const child of node.children) {
+    const entry: BuilderChildLayer = { nodeId: child.id, name: child.name || child.type, type: child.type };
+    if (typeof (child as ExportableNode).exportAsync === 'function') {
+      try {
+        entry.previewUrl = (await exportNodePreview(child as ExportableSceneNode, 1)).previewUrl;
+      } catch {
+        // Thumbnail is best-effort — the UI falls back to a type icon.
+      }
+    }
+    children.push(entry);
+  }
+  return children;
+}
+
+/** Re-renders a step's image preview with the given descendants hidden. */
+async function renderBuilderPreview(nodeId: string, ignoredNodeIds?: string[]): Promise<string> {
+  const node = await getExportableNode(nodeId);
+  const restore = await hideNodes(ignoredNodeIds);
+  try {
+    return (await exportNodePreview(node, 1)).previewUrl;
+  } finally {
+    restore();
+  }
+}
+
+/** Exports every Builder node's image (plus the screen) into an `assets/` folder and assembles the manifest. */
+async function exportBuilder(
+  nodes: BuilderExportNode[],
+  screen: BuilderScreen | null,
+  relativeDir: string,
+  compressionQuality?: number,
+): Promise<{ images: ExportRequest[]; manifest: { fileName: string; content: string }; failures: { name: string; error: string }[] }> {
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    throw new Error('Add at least one node before exporting.');
+  }
+
+  const quality = normalizeCompressionQuality(compressionQuality);
+  const dir = buildRelativeDir(relativeDir);
+  const assetsDir = `${dir}/assets`;
+  const images: ExportRequest[] = [];
+  const failures: { name: string; error: string }[] = [];
+  const manifestNodes: BuilderManifestNode[] = [];
+  const usedNames = new Set<string>();
+
+  // The screen frame itself, so the AI has the full composition to work from.
+  let screenAsset: string | undefined;
+  if (screen?.nodeId) {
+    try {
+      const node = await getExportableNode(screen.nodeId);
+      const bytes = await node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 2 } });
+      const fileName = uniqueFileName(sanitizeFileName(screen.name) || 'screen', usedNames);
+      images.push({ fileName, extension: 'png', relativeDir: assetsDir, base64Data: bytesToBase64(bytes), compressionQuality: quality });
+      screenAsset = `${assetsDir}/${fileName}.png`;
+    } catch (error) {
+      failures.push({ name: screen.name || 'screen', error: toErrorMessage(error) });
+    }
+  }
+
+  for (const [index, item] of nodes.entries()) {
+    const manifestNode: BuilderManifestNode = {
+      order: index + 1,
+      type: item.type,
+      name: item.name,
+    };
+    if (item.rect) manifestNode.rect = item.rect;
+    if (item.type === 'text') {
+      // Text nodes carry typography for every text layer; assets stay image-only.
+      if (item.textLayers?.length) manifestNode.textLayers = item.textLayers;
+      if (item.text !== undefined) manifestNode.text = item.text;
+      if (item.font) manifestNode.font = item.font;
+      if (item.color) manifestNode.color = item.color;
+      if (item.gradient) manifestNode.gradient = item.gradient;
+      if (item.textAlign) manifestNode.textAlign = item.textAlign;
+      if (item.lineHeight !== undefined) manifestNode.lineHeight = item.lineHeight;
+      if (item.letterSpacing !== undefined) manifestNode.letterSpacing = item.letterSpacing;
+    } else if (item.type === 'info') {
+      // Info nodes carry colour/gradient/size for every painted layer.
+      if (item.fillLayers?.length) manifestNode.fillLayers = item.fillLayers;
+      if (item.color) manifestNode.color = item.color;
+      if (item.gradient) manifestNode.gradient = item.gradient;
+    }
+
+    if (item.nodeId) {
+      try {
+        const format = normalizeFormat(item.assetType ?? 'png');
+        const node = await getExportableNode(item.nodeId);
+        const restore = await hideNodes(item.ignoredNodeIds);
+        let bytes: Uint8Array;
+        try {
+          bytes = await node.exportAsync({
+            format,
+            constraint: { type: 'SCALE', value: format === 'SVG' ? 1 : 2 },
+          });
+        } finally {
+          restore();
+        }
+        const extension = (item.assetType ?? 'png') as ExportRequest['extension'];
+        const fileName = uniqueFileName(sanitizeFileName(item.name), usedNames);
+        images.push({ fileName, extension, relativeDir: assetsDir, base64Data: bytesToBase64(bytes), compressionQuality: quality });
+        manifestNode.asset = `${assetsDir}/${fileName}.${extension}`;
+      } catch (error) {
+        failures.push({ name: item.name, error: toErrorMessage(error) });
+      }
+    }
+
+    manifestNodes.push(manifestNode);
+  }
+
+  const manifest: BuilderManifest = {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    screen: screen ? { name: screen.name, width: screen.width, height: screen.height, asset: screenAsset } : null,
+    nodes: manifestNodes,
+  };
+
+  return {
+    images,
+    manifest: { fileName: 'builder', content: JSON.stringify(manifest, null, 2) },
+    failures,
+  };
+}
+
+/** Ensures every exported file lands at a distinct path even when node names collide. */
+function uniqueFileName(base: string, used: Set<string>): string {
+  let name = base;
+  let n = 2;
+  while (used.has(name.toLowerCase())) name = `${base}-${n++}`;
+  used.add(name.toLowerCase());
+  return name;
+}
+
+async function getScreenOrigin(screenNodeId?: string): Promise<{ x: number; y: number }> {
+  if (!screenNodeId) return { x: 0, y: 0 };
+  try {
+    const node = await figma.getNodeByIdAsync(screenNodeId);
+    if (node && 'absoluteBoundingBox' in node) {
+      const rect = getAbsoluteRect(node as SceneNode);
+      return { x: rect.x, y: rect.y };
+    }
+  } catch {
+    // Screen layer is gone — fall back to absolute coordinates.
+  }
+  return { x: 0, y: 0 };
+}
+
+function getAbsoluteRect(node: BaseNode): BuilderRect {
+  const box = 'absoluteBoundingBox' in node ? (node as SceneNode).absoluteBoundingBox : null;
+  if (box) return { x: box.x, y: box.y, width: box.width, height: box.height };
+  const w = 'width' in node ? (node as LayoutMixin).width : 0;
+  const h = 'height' in node ? (node as LayoutMixin).height : 0;
+  return { x: 0, y: 0, width: w, height: h };
+}
+
+function getRelativeRect(node: BaseNode, origin: { x: number; y: number }): BuilderRect {
+  const rect = getAbsoluteRect(node);
+  return {
+    x: Math.round(rect.x - origin.x),
+    y: Math.round(rect.y - origin.y),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+  };
+}
+
+function readBuilderFont(node: TextNode): BuilderFont {
+  const fontName = node.fontName;
+  const family = fontName !== figma.mixed ? fontName.family : 'Mixed';
+  const style = fontName !== figma.mixed ? fontName.style : 'Mixed';
+  const size = node.fontSize === figma.mixed ? 'mixed' : Math.round(node.fontSize);
+  const weight = node.fontWeight === figma.mixed ? undefined : node.fontWeight;
+  return { size, family, style, weight };
+}
+
+function readLineHeight(node: TextNode): number | 'auto' {
+  const lh = node.lineHeight;
+  if (lh === figma.mixed || lh.unit === 'AUTO') return 'auto';
+  if (lh.unit === 'PIXELS') return Math.round(lh.value);
+  // PERCENT — resolve against the font size when it isn't mixed.
+  if (node.fontSize !== figma.mixed) return Math.round((node.fontSize * lh.value) / 100);
+  return 'auto';
+}
+
+function readLetterSpacing(node: TextNode): number | undefined {
+  const ls = node.letterSpacing;
+  if (ls === figma.mixed) return undefined;
+  if (ls.unit === 'PIXELS') return Math.round(ls.value * 100) / 100;
+  if (node.fontSize !== figma.mixed) return Math.round(((node.fontSize * ls.value) / 100) * 100) / 100;
+  return undefined;
+}
+
+function getSolidFillHex(fills: TextNode['fills']): string | undefined {
+  if (fills === figma.mixed || !Array.isArray(fills)) return undefined;
+  const solid = fills.find((p): p is SolidPaint => p.type === 'SOLID' && p.visible !== false);
+  if (!solid) return undefined;
+  return rgbToHex(solid.color);
+}
+
+const GRADIENT_TYPES: Record<string, BuilderGradient['type']> = {
+  GRADIENT_LINEAR: 'linear',
+  GRADIENT_RADIAL: 'radial',
+  GRADIENT_ANGULAR: 'angular',
+  GRADIENT_DIAMOND: 'diamond',
+};
+
+function readBuilderGradient(fills: TextNode['fills']): BuilderGradient | undefined {
+  if (fills === figma.mixed || !Array.isArray(fills)) return undefined;
+  const paint = fills.find((p): p is GradientPaint => p.type in GRADIENT_TYPES && p.visible !== false);
+  if (!paint) return undefined;
+  return {
+    type: GRADIENT_TYPES[paint.type],
+    stops: paint.gradientStops.map((s) => ({
+      position: Math.round(s.position * 1000) / 1000,
+      color: gradientStopHex(s.color),
+    })),
+  };
+}
+
+function gradientStopHex(color: RGBA): string {
+  const base = rgbToHex(color);
+  if (color.a >= 0.999) return base;
+  const alpha = Math.max(0, Math.min(255, Math.round(color.a * 255))).toString(16).padStart(2, '0');
+  return `${base}${alpha}`;
+}
+
+function rgbToHex(color: RGB): string {
+  const toHex = (c: number) => Math.max(0, Math.min(255, Math.round(c * 255))).toString(16).padStart(2, '0');
+  return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}`;
+}
+
 async function exportNodePreview(
   node: SceneNode & { exportAsync: ExportableNode['exportAsync'] },
   scale = 2,
@@ -500,6 +916,7 @@ function mapErrorType(actionType: string): MainToUiMessage['type'] {
   if (actionType === 'refresh-selection-context') return 'preview-error';
   if (actionType === 'load-exporter-settings' || actionType === 'save-exporter-settings') return 'settings-error';
   if (actionType === 'load-gemini-key' || actionType === 'save-gemini-key') return 'settings-error';
+  if (actionType === 'set-builder-screen' || actionType === 'capture-builder-node' || actionType === 'capture-builder-child' || actionType === 'refresh-builder-preview' || actionType === 'export-builder') return 'builder-error';
   return 'export-error';
 }
 

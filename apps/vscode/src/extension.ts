@@ -2,7 +2,7 @@ import * as http from 'http';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { compressJpeg, losslessCompressPng, pngQuantize } from '@napi-rs/image';
-import type { AssetFormat, ExportRequest, ExportResponse, HealthResponse, SettingsResponse } from '@assetport/shared';
+import type { AssetFormat, ExportManifestRequest, ExportRequest, ExportResponse, HealthResponse, SettingsResponse } from '@assetport/shared';
 
 const SERVER_HOST = 'localhost';
 const SERVER_PORT = 32123;
@@ -162,6 +162,14 @@ class AssetPortServer implements vscode.Disposable {
       return;
     }
 
+    if (req.method === 'POST' && req.url === '/export-manifest') {
+      const body = await readJsonBody<ExportManifestRequest>(req);
+      const result = await saveManifest(body);
+      res.writeHead(200, { ...CORS_HEADERS, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
     if (req.method !== 'POST' || req.url !== '/export') {
       res.writeHead(404, { ...CORS_HEADERS, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
@@ -229,6 +237,35 @@ async function saveExportedAsset(payload: ExportRequest): Promise<ExportResponse
   vscode.window.setStatusBarMessage(`AssetPort: saved ${relativePath}`, 4000);
 
   return { ok: true, relativePath, bytes };
+}
+
+async function saveManifest(payload: ExportManifestRequest): Promise<ExportResponse> {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+
+  if (!workspaceFolder) {
+    throw new Error('Open a folder in VS Code before exporting from Figma.');
+  }
+
+  const fileName = sanitizeFileName(payload.fileName ?? 'builder');
+  const relativeDir = typeof payload.relativeDir === 'string' ? payload.relativeDir.trim() : 'figma-build';
+  const content = typeof payload.content === 'string' ? payload.content : '';
+
+  if (!content) {
+    throw new Error('Missing manifest content.');
+  }
+
+  const workspaceRoot = workspaceFolder.uri.fsPath;
+  const targetDirectory = resolveInsideWorkspace(workspaceRoot, relativeDir);
+  const targetFile = resolveInsideWorkspace(targetDirectory, `${fileName}.json`);
+
+  const output = Buffer.from(content, 'utf8');
+  await vscode.workspace.fs.createDirectory(vscode.Uri.file(targetDirectory));
+  await vscode.workspace.fs.writeFile(vscode.Uri.file(targetFile), output);
+
+  const relativePath = path.relative(workspaceRoot, targetFile);
+  vscode.window.setStatusBarMessage(`AssetPort: saved ${relativePath}`, 4000);
+
+  return { ok: true, relativePath, bytes: output.length };
 }
 
 async function compressAsset(input: Buffer, format: AssetFormat, quality: number): Promise<Buffer> {

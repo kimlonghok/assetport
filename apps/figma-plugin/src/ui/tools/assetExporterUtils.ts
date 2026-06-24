@@ -8,6 +8,7 @@ export const DEFAULT_DIR = 'figma-exports';
 export const DEFAULT_TYPE: AssetFormat = 'png';
 export const DEFAULT_SCALE: AssetScale = 2;
 export const SERVER_EXPORT_URL = `${SERVER_BASE_URL}/export`;
+export const SERVER_MANIFEST_URL = `${SERVER_BASE_URL}/export-manifest`;
 
 export async function fetchWorkspaceRoot(): Promise<string | null> {
   try {
